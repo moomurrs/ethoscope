@@ -397,8 +397,8 @@ step_configure_system_identity() {
     print_info "Limiting journal log to 250MB..."
     echo 'SystemMaxUse=250MB' >> /etc/systemd/journald.conf
 
-    print_info "Generating en_GB.UTF-8 locale..."
-    echo "en_GB.UTF-8 UTF-8" >> /etc/locale.gen
+    print_info "Generating en_US.UTF-8 locale..."
+    echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
     locale-gen
 
     echo $(date +%Y%m%d)_ethoscope000_${PI_MODEL}.img > /etc/sdimagename
@@ -414,8 +414,8 @@ step_configure_time_sync() {
     print_info "Configuring NTP to sync with node server..."
 
     local ntp_config="server node
-server 127.127.1.0
-fudge 127.127.1.0 stratum 10
+server 10.14.22.56
+fudge 10.14.22.56 stratum 10
 restrict default kod limited nomodify nopeer noquery notrap
 restrict 127.0.0.1
 restrict ::1
@@ -539,12 +539,12 @@ EOF
 #===============================================================================
 
 step_configure_wifi() {
-    print_info "Setting WiFi country to GB..."
+    print_info "Setting WiFi country to US..."
     if command -v raspi-config >/dev/null 2>&1; then
-        raspi-config nonint do_wifi_country GB
+        raspi-config nonint do_wifi_country US
     else
         if [[ ! -f /etc/wpa_supplicant/wpa_supplicant.conf ]] || ! grep -q "country=" /etc/wpa_supplicant/wpa_supplicant.conf; then
-            echo "country=GB" >> /etc/wpa_supplicant/wpa_supplicant.conf
+            echo "country=US" >> /etc/wpa_supplicant/wpa_supplicant.conf
         fi
     fi
 
