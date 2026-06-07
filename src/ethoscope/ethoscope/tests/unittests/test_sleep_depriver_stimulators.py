@@ -18,6 +18,7 @@ from ethoscope.stimulators.sleep_depriver_stimulators import (
     ExperimentalSleepDepStimulator,
     IsMovingStimulator,
     MiddleCrossingStimulator,
+    OptomotorSleepDepriver,
     SleepDepStimulator,
     SleepDepStimulatorCR,
     mAGO,
@@ -524,6 +525,132 @@ class TestAGO(unittest.TestCase):
         stim.bind_tracker(tracker)
         out, dic = stim._decide()
         self.assertEqual(bool(out), False)
+
+
+# ===========================================================================
+# OptomotorSleepDepriver
+# ===========================================================================
+
+
+class TestOptomotorSleepDepriver(unittest.TestCase):
+    """Test OptomotorSleepDepriver yoking behavior."""
+
+    def _create_stimulator(self, **kwargs):
+        mock_hw = Mock()
+        defaults = {
+            "hardware_connection": mock_hw,
+            "min_inactive_time": 0,
+            "stimulus_probability": 1.0,
+            "stimulus_type": 1,  # motor
+            "yoking_enabled": True,
+        }
+        defaults.update(kwargs)
+        return OptomotorSleepDepriver(**defaults)
+
+    def _make_stationary_tracker(self, roi_id=1):
+        """Mock tracker with a stationary animal that will trigger stimulation."""
+        return _make_mock_tracker(
+            roi_id=roi_id,
+            last_time_point=200000,
+            positions=[
+                [{"xy_dist_log10x1000": -3000}],
+                [{"xy_dist_log10x1000": -3000}],
+            ],
+            times=[199000, 200000],
+        )
+
+    def test_hardware_interface(self):
+        """Test uses OptoMotor hardware interface."""
+        self.assertEqual(OptomotorSleepDepriver._HardwareInterfaceClass, OptoMotor)
+
+    def test_yoking_focal_triggers_yoke_motor(self):
+        """Test that a stationary focal ROI triggers both its own and the yoke motor."""
+        stim = self._create_stimulator()
+        tracker = self._make_stationary_tracker(roi_id=1)
+        stim.bind_tracker(tracker)
+        stim._t0 = 0  # Force inactivity threshold to be exceeded
+
+        # Mock _deliver to capture the yoke motor call
+        stim._deliver = Mock()
+
+        out, dic = stim._decide()
+
+        # Focal ROI should stimulate (out=1 means real stimulation)
+        self.assertEqual(int(out), 1)
+        # Focal ROI 1 maps to motor channel 1
+        self.assertEqual(dic["channel"], 1)
+        # Yoke ROI 12 maps to motor channel 11
+        stim._deliver.assert_called_once_with(channel=11, duration=stim._pulse_duration)
+
+    def test_yoking_yoke_roi_no_self_trigger(self):
+        """Test that a yoke ROI never triggers stimulation on its own."""
+        stim = self._create_stimulator()
+        tracker = self._make_stationary_tracker(roi_id=12)  # yoke ROI
+        stim.bind_tracker(tracker)
+        stim._t0 = 0
+
+        out, dic = stim._decide()
+
+        self.assertEqual(int(out), 0)
+        self.assertEqual(dic, {})
+
+    def test_no_yoking_yoke_roi_stimulates_normally(self):
+        """Test that without yoking, yoke ROIs stimulate normally."""
+        stim = self._create_stimulator(yoking_enabled=False)
+        tracker = self._make_stationary_tracker(roi_id=12)
+        stim.bind_tracker(tracker)
+        stim._t0 = 0
+
+        out, dic = stim._decide()
+
+        # Without yoking, ROI 12 should stimulate on its own channel
+        self.assertEqual(int(out), 1)
+        self.assertEqual(dic["channel"], 11)
+
+    def test_yoking_all_pairs(self):
+        """Test all focal-to-yoke pairs trigger the correct yoke channels."""
+        expected_yoke_channels = {
+            1: 11,  # focal 1 -> yoke 12 -> motor ch 11
+            3: 13,  # focal 3 -> yoke 14 -> motor ch 13
+            5: 15,  # focal 5 -> yoke 16 -> motor ch 15
+            7: 17,  # focal 7 -> yoke 18 -> motor ch 17
+            9: 19,  # focal 9 -> yoke 20 -> motor ch 19
+        }
+        for focal_roi, expected_yoke_ch in expected_yoke_channels.items():
+            with self.subTest(focal_roi=focal_roi):
+                stim = self._create_stimulator()
+                tracker = self._make_stationary_tracker(roi_id=focal_roi)
+                stim.bind_tracker(tracker)
+                stim._t0 = 0
+                stim._deliver = Mock()
+
+                out, dic = stim._decide()
+
+                self.assertEqual(int(out), 1)
+                stim._deliver.assert_called_once_with(
+                    channel=expected_yoke_ch, duration=stim._pulse_duration
+                )
+
+    def test_yoking_no_deliver_on_moving_animal(self):
+        """Test that _deliver is not called when the animal is moving (out != 1)."""
+        stim = self._create_stimulator()
+        # Moving animal (high xy_dist_log10x1000)
+        tracker = _make_mock_tracker(
+            roi_id=1,
+            last_time_point=200000,
+            positions=[
+                [{"xy_dist_log10x1000": 3000}],
+                [{"xy_dist_log10x1000": 3000}],
+            ],
+            times=[199000, 200000],
+        )
+        stim.bind_tracker(tracker)
+        stim._deliver = Mock()
+
+        out, dic = stim._decide()
+
+        self.assertEqual(int(out), 0)
+        stim._deliver.assert_not_called()
 
 
 if __name__ == "__main__":
