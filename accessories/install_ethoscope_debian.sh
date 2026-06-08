@@ -313,7 +313,7 @@ EOF
     fi
 
     print_info "Cloning ethoscope repository..."
-    git clone https://github.com/gilestrolab/ethoscope.git /opt/ethoscope
+    git clone https://github.com/moomurrs/ethoscope.git /opt/ethoscope
 
     print_info "Configuring git repository..."
     cd /opt/ethoscope/
@@ -691,7 +691,7 @@ step_configure_raspberry_pi_hardware() {
 # Resets a configured ethoscope back to factory defaults (ETHOSCOPE_000).
 # Reuses installation steps where possible, adds update & cleanup utilities.
 
-GITHUB_REPO="https://github.com/gilestrolab/ethoscope.git"
+GITHUB_REPO="https://github.com/moomurrs/ethoscope.git"
 LOCAL_REPO="git://node.local/ethoscope.git"
 ETHOSCOPE_PATH="/opt/ethoscope"
 
