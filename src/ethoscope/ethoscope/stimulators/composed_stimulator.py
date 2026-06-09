@@ -51,6 +51,13 @@ class ComposedStimulator(BaseStimulator):
                     },
                 ],
             },
+            # --- Yoking ---
+            {
+                "type": "boolean",
+                "name": "enable_yoking",
+                "description": "Enable yoking: focal ROIs (1,3,5,7,9) co-trigger their paired yoked ROI (12,14,16,18,20); yoked ROIs never self-trigger",
+                "default": False,
+            },
             # --- Trigger-specific arguments ---
             {
                 "type": "number",
@@ -195,13 +202,6 @@ class ComposedStimulator(BaseStimulator):
                 "description": "Number of ON/OFF cycles",
                 "default": 5,
                 "depends_on": {"action_type": ["led_pulse_train"]},
-            },
-            # --- Yoking ---
-            {
-                "type": "bool",
-                "name": "enable_yoking",
-                "description": "Enable focal-yoked yoking: focal ROIs (1,3,5,7,9) co-stimulate their paired yoked ROI (12,14,16,18,20); yoked ROIs never self-trigger",
-                "default": False,
             },
             # --- Schedule ---
             {
