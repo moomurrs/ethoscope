@@ -196,6 +196,13 @@ class ComposedStimulator(BaseStimulator):
                 "default": 5,
                 "depends_on": {"action_type": ["led_pulse_train"]},
             },
+            # --- Yoking ---
+            {
+                "type": "bool",
+                "name": "enable_yoking",
+                "description": "Enable focal-yoked yoking: focal ROIs (1,3,5,7,9) co-stimulate their paired yoked ROI (12,14,16,18,20); yoked ROIs never self-trigger",
+                "default": False,
+            },
             # --- Schedule ---
             {
                 "type": "date_range",
@@ -228,6 +235,8 @@ class ComposedStimulator(BaseStimulator):
         pulse_on_ms=100,
         pulse_off_ms=100,
         pulse_cycles=5,
+        # Yoking arg
+        enable_yoking=False,
         # Standard args
         date_range="",
         roi_template_config=None,
@@ -308,6 +317,18 @@ class ComposedStimulator(BaseStimulator):
             self._action.channel_type, led_count=led_count
         )
 
+        # Yoking configuration: single toggle applies hardcoded pairings across all ROIs
+        # Focal ROI → Yoked ROI (focal triggers both; yoked never self-triggers)
+        self._YOKING_PAIRS = {
+            1: 12,
+            3: 14,
+            5: 16,
+            7: 18,
+            9: 20,
+        }
+        self._enable_yoking = bool(enable_yoking)
+        self._YOKED_ROIS = {12, 14, 16, 18, 20}
+
         logging.info(
             f"ComposedStimulator initialized: trigger={trigger_type}, "
             f"action={action_type}, channels={self._action.channel_type}, "
@@ -326,18 +347,45 @@ class ComposedStimulator(BaseStimulator):
 
         channel = self._roi_to_channel.get(roi_id)
         if channel is None:
-            return HasInteractedVariable(False), {}
+            logging.warning(f"ComposedStimulator: ROI {roi_id} has no channel!")
+            return HasInteractedVariable(0), {}
+
+        # Yoking mode: yoked ROIs never self-trigger
+        if self._enable_yoking and roi_id in self._YOKED_ROIS:
+            return HasInteractedVariable(0), {}
 
         interaction_code, _metadata = self._trigger.check()
 
         if interaction_code == 1:
             instruction = self._action.build_instruction(channel)
             logging.info(
-                f"ComposedStimulator: stimulus on channel {channel} " f"(ROI {roi_id})"
+                f"ComposedStimulator: stimulus on channel {channel} (ROI {roi_id})"
             )
+
+            # Yoking mode: focal ROI also stimulates its paired yoked channel
+            if self._enable_yoking and roi_id in self._YOKING_PAIRS:
+                yoked_roi = self._YOKING_PAIRS[roi_id]
+                yoked_channel = self._roi_to_channel.get(yoked_roi)
+                if yoked_channel is None:
+                    raise KeyError(f"Yoked ROI {yoked_roi} has no channel!")
+
+                instruction["_yoked_partner_channel"] = yoked_channel
+                logging.info(
+                    f"ComposedStimulator: yoked stimulus on channel "
+                    f"{yoked_channel} (ROI {yoked_roi})"
+                )
+
             return HasInteractedVariable(1), instruction
         elif interaction_code == 2:
             logging.info(f"ComposedStimulator: ghost stimulus (ROI {roi_id})")
             return HasInteractedVariable(2), {}
 
         return HasInteractedVariable(0), {}
+
+    def _deliver(self, **kwargs):
+        """Deliver instruction(s) to hardware. Handles yoked partner channel."""
+        yoked_channel = kwargs.pop("_yoked_partner_channel", None)
+        super()._deliver(**kwargs)
+        if yoked_channel is not None:
+            yoked_instruction = self._action.build_instruction(yoked_channel)
+            self._hardware_connection.send_instruction(yoked_instruction)

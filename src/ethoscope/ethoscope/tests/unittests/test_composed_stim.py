@@ -222,5 +222,214 @@ class TestComposedStimulatorChannelMaps(unittest.TestCase):
             self.assertEqual(stim._roi_to_channel[1] % 2, 0)
 
 
+class TestComposedStimulatorYoking(unittest.TestCase):
+    """Test the enable_yoking mechanism for focal and yoked ROIs."""
+
+    YOKING_PAIRS = {1: 12, 3: 14, 5: 16, 7: 18, 9: 20}
+    FOCAL_ROIS = [1, 3, 5, 7, 9]
+    YOKED_ROIS = [12, 14, 16, 18, 20]
+
+    def _create_bound_stimulator(self, roi_id=1, enable_yoking=False, **kwargs):
+        """Create a stimulator bound to a tracker for the given ROI."""
+        mock_hw = Mock()
+        mock_hw.interrogate.side_effect = Exception("no module")
+        defaults = {
+            "hardware_connection": mock_hw,
+            "trigger_type": "inactivity",
+            "action_type": "motor_pulse",
+            "min_inactive_time": 0,
+            "stimulus_probability": 1.0,
+            "enable_yoking": enable_yoking,
+        }
+        defaults.update(kwargs)
+        stim = ComposedStimulator(**defaults)
+        tracker = _make_mock_tracker(
+            roi_id=roi_id,
+            positions=[
+                [{"xy_dist_log10x1000": -3000}],
+                [{"xy_dist_log10x1000": -3000}],
+            ],
+            times=[199000, 200000],
+        )
+        stim.bind_tracker(tracker)
+        return stim
+
+    # ------------------------------------------------------------------ #
+    # enable_yoking = False (default): normal independent behavior
+    # ------------------------------------------------------------------ #
+
+    def test_yoking_disabled_focal_roi_triggers_normally(self):
+        """Focal ROI triggers normally with no yoked channel when yoking is disabled."""
+        for roi_id in self.FOCAL_ROIS:
+            with self.subTest(roi_id=roi_id):
+                stim = self._create_bound_stimulator(roi_id=roi_id, enable_yoking=False)
+                stim._trigger._t0 = 0
+                out, instruction = stim._decide()
+                self.assertEqual(int(out), 1, f"ROI {roi_id} should trigger")
+                self.assertIn("channel", instruction)
+                self.assertNotIn("_yoked_partner_channel", instruction)
+
+    def test_yoking_disabled_yoked_roi_triggers_normally(self):
+        """Yoked ROI triggers independently when yoking is disabled."""
+        for roi_id in self.YOKED_ROIS:
+            with self.subTest(roi_id=roi_id):
+                stim = self._create_bound_stimulator(roi_id=roi_id, enable_yoking=False)
+                stim._trigger._t0 = 0
+                out, instruction = stim._decide()
+                self.assertEqual(
+                    int(out), 1, f"ROI {roi_id} should trigger independently"
+                )
+                self.assertIn("channel", instruction)
+                self.assertNotIn("_yoked_partner_channel", instruction)
+
+    # ------------------------------------------------------------------ #
+    # enable_yoking = True: focal triggers both, yoked never self-triggers
+    # ------------------------------------------------------------------ #
+
+    def test_yoking_enabled_focal_roi_triggers_with_yoked_partner(self):
+        """Focal ROI fires and includes the yoked partner channel in the instruction."""
+        for focal_id, yoked_id in self.YOKING_PAIRS.items():
+            with self.subTest(focal_roi=focal_id, yoked_roi=yoked_id):
+                stim = self._create_bound_stimulator(
+                    roi_id=focal_id, enable_yoking=True
+                )
+                stim._trigger._t0 = 0
+                out, instruction = stim._decide()
+                self.assertEqual(int(out), 1, f"Focal ROI {focal_id} should trigger")
+                self.assertIn("channel", instruction)
+                self.assertIn("_yoked_partner_channel", instruction)
+                # The yoked channel must match the mapped channel for the paired ROI
+                expected_yoked_channel = stim._roi_to_channel.get(yoked_id)
+                self.assertEqual(
+                    instruction["_yoked_partner_channel"],
+                    expected_yoked_channel,
+                    f"Yoked channel for ROI {focal_id}->{yoked_id} mismatch",
+                )
+
+    def test_yoking_enabled_yoked_roi_suppressed(self):
+        """Yoked ROI never self-triggers when yoking is enabled."""
+        for roi_id in self.YOKED_ROIS:
+            with self.subTest(roi_id=roi_id):
+                stim = self._create_bound_stimulator(roi_id=roi_id, enable_yoking=True)
+                stim._trigger._t0 = 0
+                out, instruction = stim._decide()
+                self.assertEqual(
+                    int(out), 0, f"Yoked ROI {roi_id} must not self-trigger"
+                )
+                self.assertEqual(instruction, {})
+
+    def test_yoking_enabled_focal_roi_no_trigger_is_clean(self):
+        """Focal ROI that doesn't meet trigger condition returns normally."""
+        stim = self._create_bound_stimulator(
+            roi_id=1, enable_yoking=True, min_inactive_time=9999
+        )
+        out, instruction = stim._decide()
+        self.assertEqual(int(out), 0)
+        self.assertNotIn("_yoked_partner_channel", instruction)
+
+    # ------------------------------------------------------------------ #
+    # _deliver with yoked partner channel
+    # ------------------------------------------------------------------ #
+
+    def test_deliver_sends_yoked_instruction(self):
+        """_deliver sends an extra instruction for the yoked partner channel."""
+        mock_hw = Mock()
+        mock_hw.interrogate.side_effect = Exception("no module")
+        stim = ComposedStimulator(
+            hardware_connection=mock_hw,
+            trigger_type="inactivity",
+            action_type="motor_pulse",
+            enable_yoking=True,
+        )
+        tracker = _make_mock_tracker(roi_id=1)
+        stim.bind_tracker(tracker)
+
+        yoked_channel = stim._roi_to_channel.get(12)
+        # Call _deliver with a yoked partner
+        stim._deliver(channel=1, duration=1000, _yoked_partner_channel=yoked_channel)
+
+        # Primary instruction was sent by the parent _deliver (via send_instruction)
+        # Yoked instruction is sent explicitly after super()._deliver()
+        send_calls = mock_hw.send_instruction.call_args_list
+        # At least 2 calls: primary + yoked
+        self.assertGreaterEqual(
+            len(send_calls), 2, "Expected primary + yoked instruction"
+        )
+        # The last call should be the yoked instruction
+        last_call_kw = send_calls[-1][1] if send_calls[-1][1] else send_calls[-1][0][0]
+        self.assertEqual(last_call_kw.get("channel"), yoked_channel)
+
+    def test_deliver_without_yoked_partner(self):
+        """_deliver without _yoked_partner_channel sends only the primary instruction."""
+        mock_hw = Mock()
+        mock_hw.interrogate.side_effect = Exception("no module")
+        stim = ComposedStimulator(
+            hardware_connection=mock_hw,
+            trigger_type="inactivity",
+            action_type="motor_pulse",
+            enable_yoking=False,
+        )
+        tracker = _make_mock_tracker(roi_id=1)
+        stim.bind_tracker(tracker)
+
+        stim._deliver(channel=1, duration=1000)
+        # Only the primary instruction from super()._deliver
+        send_calls = mock_hw.send_instruction.call_args_list
+        self.assertEqual(len(send_calls), 1, "Expected only the primary instruction")
+
+    # ------------------------------------------------------------------ #
+    # Yoking with LED action type
+    # ------------------------------------------------------------------ #
+
+    def test_yoking_enabled_led_action_focal_roi(self):
+        """Yoking works correctly with LED pulse actions."""
+        stim = self._create_bound_stimulator(
+            roi_id=1, enable_yoking=True, action_type="led_pulse"
+        )
+        stim._trigger._t0 = 0
+        out, instruction = stim._decide()
+        self.assertEqual(int(out), 1)
+        self.assertIn("_yoked_partner_channel", instruction)
+        # LED channel map: ROI 12 → ch 10
+        expected_yoked_channel = stim._roi_to_channel.get(12)
+        self.assertEqual(instruction["_yoked_partner_channel"], expected_yoked_channel)
+
+    def test_yoking_enabled_led_action_yoked_roi_suppressed(self):
+        """Yoked ROI is suppressed regardless of action type."""
+        stim = self._create_bound_stimulator(
+            roi_id=12, enable_yoking=True, action_type="led_pulse"
+        )
+        stim._trigger._t0 = 0
+        out, instruction = stim._decide()
+        self.assertEqual(int(out), 0)
+        self.assertEqual(instruction, {})
+
+    # ------------------------------------------------------------------ #
+    # Yoking configuration attributes
+    # ------------------------------------------------------------------ #
+
+    def test_yoking_attributes_initialized(self):
+        """Yoking attributes are correctly set from constructor."""
+        mock_hw = Mock()
+        mock_hw.interrogate.side_effect = Exception("no module")
+        stim_off = ComposedStimulator(
+            hardware_connection=mock_hw,
+            trigger_type="inactivity",
+            action_type="motor_pulse",
+            enable_yoking=False,
+        )
+        self.assertFalse(stim_off._enable_yoking)
+        self.assertEqual(set(stim_off._YOKED_ROIS), set(self.YOKED_ROIS))
+
+        stim_on = ComposedStimulator(
+            hardware_connection=mock_hw,
+            trigger_type="inactivity",
+            action_type="motor_pulse",
+            enable_yoking=True,
+        )
+        self.assertTrue(stim_on._enable_yoking)
+        self.assertEqual(stim_on._YOKING_PAIRS, self.YOKING_PAIRS)
+
+
 if __name__ == "__main__":
     unittest.main()
