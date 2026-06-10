@@ -199,14 +199,16 @@ const float VERSION = 1.5;
 // Pin Configuration based on PCB Version
 // =============================================================================
 
-#if (PCBVERSION == 10) // PCB Version 1.0
+#if (PCBVERSION == 9) // PCB Version 0.9
+    static const uint8_t pins[] = {0, 11, 1, 10, A0, 9, A1, 8, A2, 7, A3, 6, A4, 5, A5, 4, 13, 3, 12, 2};
+#elif (PCBVERSION == 10) // PCB Version 1.0
     static const uint8_t pins[] = {1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, A0, A1, A2, A3, A4, A5};
 #elif (PCBVERSION == 11) // PCB Version 1.1
     static const uint8_t pins[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, A0, A1, A2, A3, A4, A5};
 #elif (PCBVERSION == 12) || (PCBVERSION == 13) // PCB Version 1.2 (DEV) or 1.3 (production)
     static const uint8_t pins[] = {3, 8, 4, 9, 5, 10, 6, 11, 7, 12, A3, 2, A4, 13, A5, A0, 0, A1, 1, A2};
 #else
-    #error "Invalid PCBVERSION defined. Use 10 for v1.0, 11 for v1.1, or 12/13 for v1.2/1.3."
+    #error "Invalid PCBVERSION defined. Use 9 for 0.9, 10 for v1.0, 11 for v1.1, or 12/13 for v1.2/1.3."
 #endif
 
 // Channel mapping arrays — sized at compile time per module
