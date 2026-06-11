@@ -394,8 +394,22 @@ step_configure_system_identity() {
     echo 'WIFI IP: \4{wlan0}' >> /etc/issue
     echo 'Time on Device: \d \t' >> /etc/issue
 
-    print_info "Limiting journal log to 250MB..."
-    echo 'SystemMaxUse=250MB' >> /etc/systemd/journald.conf
+    #print_info "Limiting journal log to 250MB..."
+    #echo 'SystemMaxUse=250MB' >> /etc/systemd/journald.conf
+
+    # Enable persistent journalctl log instead of volatile (for SSD only!)
+    mkdir -p /etc/systemd/journald.conf.d
+    # Write the configuration file
+    cat <<EOF | tee /etc/systemd/journald.conf.d/099-persistent-logging.conf > /dev/null
+    [Journal]
+    Storage=persistent
+    EOF
+    # Create the journal directory
+    mkdir -p /var/log/journal
+    # Apply the correct permissions using systemd-tmpfiles
+    systemd-tmpfiles --create --prefix /var/log/journal
+    systemctl restart systemd-journald
+    print_success "Persistent journalctl logging is now enabled."
 
     print_info "Generating en_US.UTF-8 locale..."
     echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
