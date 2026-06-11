@@ -59,9 +59,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                         transfer_details = backup_instance._transfer_details
 
                         # Add transfer details to the status
-                        enhanced_status[device_id][
-                            "transfer_details"
-                        ] = transfer_details
+                        enhanced_status[device_id]["transfer_details"] = (
+                            transfer_details
+                        )
 
                         # Enhance individual file information in synced data
                         synced_info = enhanced_status[device_id].get("synced", {})
@@ -274,8 +274,6 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    logging.getLogger().setLevel(logging.INFO)
-
     try:
         parser = optparse.OptionParser()
         parser.add_option(
@@ -384,10 +382,12 @@ def main():
             print("Error: At least one backup type must be selected")
             sys.exit(1)
 
-        if DEBUG:
-            logging.basicConfig()
-            logging.getLogger().setLevel(logging.DEBUG)
-            logging.info("Logging using DEBUG SETTINGS")
+        level = logging.DEBUG if DEBUG else logging.INFO
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            force=True,
+        )
 
         backup_types = []
         if BACKUP_RESULTS:

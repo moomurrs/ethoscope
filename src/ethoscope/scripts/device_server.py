@@ -353,7 +353,6 @@ def controls(id, action):
         return info(id)
 
     elif action in ["stop", "close", "poweroff", "reboot", "restart"]:
-
         send_command("stop")
 
         if action == "close":
@@ -1056,7 +1055,6 @@ def get_ip_address(interface_name=None):
 
 
 if __name__ == "__main__":
-
     parser = OptionParser()
     parser.add_option("-p", "--port", dest="port", default=9000, help="port")
     parser.add_option(
@@ -1074,10 +1072,13 @@ if __name__ == "__main__":
     PORT = option_dict["port"]
     DEBUG = option_dict["debug"]
 
-    if DEBUG:
-        logging.basicConfig()
-        logging.getLogger().setLevel(logging.DEBUG)
-        logging.info("Logging using DEBUG SETTINGS")
+    level = logging.DEBUG if DEBUG else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,
+    )
+    logging.info("Device Server beginning...")
 
     _MACHINE_ID = pi.get_machine_id()
     _MACHINE_NAME = pi.get_machine_name()
@@ -1122,7 +1123,6 @@ if __name__ == "__main__":
 
         # tries for one minute or until an IP ip_address is obtained
         while ip_address is None and ip_attempts < 60:
-
             try:
                 ip_address = get_ip_address()
             except Exception:
