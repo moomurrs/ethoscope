@@ -42,6 +42,9 @@ NC='\033[0m' # No Color
 PROGRESS_FILE="/etc/ethoscope/.install_progress"
 SCRIPT_PATH="$(readlink -f "$0")"
 
+# Time sync: NTP server to sync against (primary source of truth)
+TIME_SYNC_SERVER="10.14.22.56"
+
 # Installation steps (order matters)
 STEP_NAMES=(
     "Install system packages (apt)"
@@ -255,14 +258,12 @@ step_install_apt_packages() {
         pkg-config \
         git wget curl
 
-    # NTP: ntp was removed in Trixie, replaced by ntpsec
-    print_info "Installing NTP service..."
-    if apt-cache show ntp >/dev/null 2>&1 && apt-get install -y ntp 2>/dev/null; then
-        print_success "Installed ntp"
-    elif apt-get install -y ntpsec 2>/dev/null; then
-        print_success "Installed ntpsec (ntp replacement)"
+    # Time synchronization: use chrony for accurate NTP sync
+    print_info "Installing chrony..."
+    if apt-get install -y chrony 2>/dev/null; then
+        print_success "Installed chrony"
     else
-        print_warning "No NTP package found — time sync will rely on systemd-timesyncd"
+        print_warning "chrony installation failed — time sync may need manual setup"
     fi
 
     print_info "Restarting network services..."
@@ -425,24 +426,29 @@ step_configure_system_identity() {
 #===============================================================================
 
 step_configure_time_sync() {
-    print_info "Configuring NTP to sync with node server..."
+    print_info "Configuring chrony to sync with node server..."
 
-    local ntp_config="server node
-server 10.14.22.56
-fudge 10.14.22.56 stratum 10
-restrict default kod limited nomodify nopeer noquery notrap
-restrict 127.0.0.1
-restrict ::1
-driftfile /var/lib/ntp/ntp.drift"
+    # Disable systemd-timesyncd (conflicts with chrony)
+    print_info "Disabling systemd-timesyncd..."
+    systemctl disable --now systemd-timesyncd.service 2>/dev/null || true
+    print_success "systemd-timesyncd disabled"
 
-    # ntpsec uses /etc/ntpsec/ntp.conf, classic ntp uses /etc/ntp.conf
-    if [[ -d "/etc/ntpsec" ]]; then
-        echo "$ntp_config" > /etc/ntpsec/ntp.conf
-        print_success "NTP configured (ntpsec) to use node as time source"
-    else
-        echo "$ntp_config" > /etc/ntp.conf
-        print_success "NTP configured to use node as time source"
-    fi
+    # Write chrony configuration
+    cat > /etc/chrony/chrony.conf << EOF
+# Time source: node server (primary)
+server ${TIME_SYNC_SERVER} iburst
+
+# Allow the system clock to be stepped on startup if offset is large
+makestep 1.0 -1
+
+# Record the rate at which the system clock gains/losses time
+driftfile /var/lib/chrony/chrony.drift
+
+# Log files
+logdir /var/log/chrony
+EOF
+
+    print_success "Chrony configured to use node as time source"
 }
 
 #===============================================================================
@@ -455,18 +461,13 @@ step_enable_system_services() {
         ethoscope_update.service ethoscope_GPIO_listener.service \
         ethoscope_light.service
 
-    # NTP service
-    print_info "Enabling NTP service..."
-    local ntp_enabled=false
-    for service in "ntpsec.service" "ntp.service" "ntpd.service" "systemd-timesyncd.service" "chronyd.service"; do
-        if systemctl list-unit-files 2>/dev/null | grep -q "^${service}"; then
-            systemctl enable "$service" 2>/dev/null && ntp_enabled=true && break
-        fi
-    done
-    if $ntp_enabled; then
-        print_success "NTP service enabled"
+    # Chrony service
+    print_info "Enabling chrony service..."
+    if systemctl list-unit-files 2>/dev/null | grep -q "^chronyd.service"; then
+        systemctl enable chronyd.service 2>/dev/null
+        print_success "chronyd.service enabled"
     else
-        print_warning "No NTP service found — time sync may need manual setup"
+        print_warning "chronyd.service not found — time sync may need manual setup"
     fi
 
     # MariaDB service
