@@ -402,9 +402,9 @@ step_configure_system_identity() {
     mkdir -p /etc/systemd/journald.conf.d
     # Write the configuration file
     cat <<EOF | tee /etc/systemd/journald.conf.d/099-persistent-logging.conf > /dev/null
-    [Journal]
-    Storage=persistent
-    EOF
+[Journal]
+Storage=persistent
+EOF
     # Create the journal directory
     mkdir -p /var/log/journal
     # Apply the correct permissions using systemd-tmpfiles
