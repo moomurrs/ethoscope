@@ -447,6 +447,8 @@ driftfile /var/lib/chrony/chrony.drift
 # Log files
 logdir /var/log/chrony
 EOF
+    print_info "Restarting chrony to apply configuration..."
+    systemctl restart chrony.service 2>/dev/null || true
 
     print_success "Chrony configured to use node as time source"
 }
@@ -463,11 +465,11 @@ step_enable_system_services() {
 
     # Chrony service
     print_info "Enabling chrony service..."
-    if systemctl list-unit-files 2>/dev/null | grep -q "^chronyd.service"; then
-        systemctl enable chronyd.service 2>/dev/null
-        print_success "chronyd.service enabled"
+    if systemctl list-unit-files 2>/dev/null | grep -q "^chrony.service"; then
+        systemctl enable chrony.service 2>/dev/null
+        print_success "chrony.service enabled"
     else
-        print_warning "chronyd.service not found — time sync may need manual setup"
+        print_warning "chrony.service not found — time sync may need manual setup"
     fi
 
     # MariaDB service
