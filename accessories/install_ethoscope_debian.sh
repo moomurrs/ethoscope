@@ -529,8 +529,12 @@ Name=wlan0
 [Network]
 DHCP=yes
 LinkLocalAddressing=yes
+# Address=10.14.22.XXX/24 # YOUR CURRENT IP
 
 [DHCPv4]
+ClientIdentifier=mac
+KeepConfiguration=yes
+UseHostname=yes
 RouteMetric=20
 UseDNS=yes
 EOF
