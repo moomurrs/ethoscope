@@ -259,8 +259,14 @@ step_install_apt_packages() {
         git wget curl lm-sensors btop
 
     # Time synchronization: use chrony for accurate NTP sync
+    print_info "Disabling systemd-timesyncd to make room for chrony..."
+    systemctl disable --now systemd-timesyncd.service 2>/dev/null || true
+    apt-get remove -y systemd-timesyncd 2>/dev/null || true
+
+    # Time synchronization: use chrony for accurate NTP sync
     print_info "Installing chrony..."
-    if apt-get install -y chrony 2>/dev/null; then
+    # 1. Added DEBIAN_FRONTEND=noninteractive to suppress prompts
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y chrony; then
         print_success "Installed chrony"
     else
         print_warning "chrony installation failed — time sync may need manual setup"
@@ -427,11 +433,6 @@ EOF
 
 step_configure_time_sync() {
     print_info "Configuring chrony to sync with node server..."
-
-    # Disable systemd-timesyncd (conflicts with chrony)
-    print_info "Disabling systemd-timesyncd..."
-    systemctl disable --now systemd-timesyncd.service 2>/dev/null || true
-    print_success "systemd-timesyncd disabled"
 
     # Write chrony configuration
     cat > /etc/chrony/chrony.conf << EOF
