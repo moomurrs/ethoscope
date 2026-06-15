@@ -44,6 +44,8 @@ SCRIPT_PATH="$(readlink -f "$0")"
 
 # Time sync: NTP server to sync against (primary source of truth)
 TIME_SYNC_SERVER="10.14.22.56"
+# Install and configure MariaDB (default false)
+INSTALL_MARIADB=false
 
 # Installation steps (order matters)
 STEP_NAMES=(
@@ -248,8 +250,6 @@ step_install_apt_packages() {
 
     print_info "Installing system packages..."
     apt-get install -y \
-        # mariadb-server \
-        # mariadb-client \
         sqlite3 \
         systemd-resolved \
         build-essential \
@@ -257,6 +257,12 @@ step_install_apt_packages() {
         libcap-dev \
         pkg-config \
         git wget curl lm-sensors btop
+
+    # Conditionally install MariaDB
+    if [[ "$INSTALL_MARIADB" == "true" ]]; then
+        print_info "Installing MariaDB packages..."
+        apt-get install -y mariadb-server mariadb-client
+    fi
 
     # Time synchronization: use chrony for accurate NTP sync
     print_info "Disabling systemd-timesyncd to make room for chrony..."
@@ -474,14 +480,16 @@ step_enable_system_services() {
     fi
 
     # MariaDB service
-    print_info "Enabling database service..."
-    for service in "mariadb.service" "mysql.service" "mysqld.service"; do
-        if systemctl list-unit-files 2>/dev/null | grep -q "^${service}"; then
-            systemctl enable "$service" 2>/dev/null
-            print_success "Enabled $service"
-            break
-        fi
-    done
+    if [[ "$INSTALL_MARIADB" == "true" ]]; then
+        print_info "Enabling database service..."
+        for service in "mariadb.service" "mysql.service" "mysqld.service"; do
+            if systemctl list-unit-files 2>/dev/null | grep -q "^${service}"; then
+                systemctl enable "$service" 2>/dev/null
+                print_success "Enabled $service"
+                break
+            fi
+        done
+    fi
 
     # SSH service
     for service in "ssh.service" "sshd.service"; do
@@ -589,6 +597,11 @@ step_configure_wifi() {
 #===============================================================================
 
 step_setup_mariadb() {
+    if [[ "$INSTALL_MARIADB" != "true" ]]; then
+            print_info "INSTALL_MARIADB is false — skipping database initialization."
+            return 0
+    fi
+
     if [ ! -d "/var/lib/mysql/mysql" ]; then
         print_info "Initializing MariaDB data directory..."
         mysql_install_db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
@@ -628,6 +641,11 @@ EOF
 #===============================================================================
 
 step_configure_mariadb() {
+    if [[ "$INSTALL_MARIADB" != "true" ]]; then
+            print_info "INSTALL_MARIADB is false — skipping database configuration."
+            return 0
+    fi
+
     local buffer_pool_size="64M"
     local log_file_size="16M"
     local key_buffer_size="16M"
