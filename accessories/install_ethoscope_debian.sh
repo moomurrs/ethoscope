@@ -248,15 +248,15 @@ step_install_apt_packages() {
 
     print_info "Installing system packages..."
     apt-get install -y \
-        mariadb-server \
-        mariadb-client \
+        # mariadb-server \
+        # mariadb-client \
         sqlite3 \
         systemd-resolved \
         build-essential \
         python3-dev \
         libcap-dev \
         pkg-config \
-        git wget curl
+        git wget curl lm-sensors btop
 
     # Time synchronization: use chrony for accurate NTP sync
     print_info "Installing chrony..."
