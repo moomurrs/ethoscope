@@ -200,7 +200,7 @@ const float VERSION = 1.5;
 // =============================================================================
 
 #if (PCBVERSION == 9) // PCB Version 0.9
-    static const uint8_t pins[] = {0, 11, 1, 10, A0, 9, A1, 8, A2, 7, A3, 6, A4, 5, A5, 4, 13, 3, 12, 2};
+    static const uint8_t pins[] = {0, 12, 1, 11, A0, 9, A1, 8, A2, 7, A3, 6, A4, 5, A5, 4, 13, 3, 12, 2};
 #elif (PCBVERSION == 10) // PCB Version 1.0
     static const uint8_t pins[] = {1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, A0, A1, A2, A3, A4, A5};
 #elif (PCBVERSION == 11) // PCB Version 1.1
