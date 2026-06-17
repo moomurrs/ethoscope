@@ -249,6 +249,13 @@ step_install_apt_packages() {
     apt-get upgrade -y
 
     print_info "Installing system packages..."
+
+    # Conditionally install MariaDB
+    if [[ "$INSTALL_MARIADB" == "true" ]]; then
+        print_info "Installing MariaDB packages..."
+        apt-get install -y mariadb-server mariadb-client
+    fi
+
     apt-get install -y \
         sqlite3 \
         systemd-resolved \
@@ -257,12 +264,6 @@ step_install_apt_packages() {
         libcap-dev \
         pkg-config \
         git wget curl lm-sensors btop
-
-    # Conditionally install MariaDB
-    if [[ "$INSTALL_MARIADB" == "true" ]]; then
-        print_info "Installing MariaDB packages..."
-        apt-get install -y mariadb-server mariadb-client
-    fi
 
     print_info "Restarting network services to ensure DNS works..."
     systemctl restart systemd-networkd systemd-resolved || true
