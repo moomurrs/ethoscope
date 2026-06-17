@@ -264,12 +264,15 @@ step_install_apt_packages() {
         apt-get install -y mariadb-server mariadb-client
     fi
 
+    print_info "Restarting network services to ensure DNS works..."
+    systemctl restart systemd-networkd systemd-resolved || true
+    sleep 2 # Give the network stack a brief moment to come back up
+
     # Time synchronization: use chrony for accurate NTP sync
     print_info "Disabling systemd-timesyncd to make room for chrony..."
     systemctl disable --now systemd-timesyncd.service 2>/dev/null || true
     apt-get remove -y systemd-timesyncd 2>/dev/null || true
 
-    # Time synchronization: use chrony for accurate NTP sync
     print_info "Installing chrony..."
     # 1. Added DEBIAN_FRONTEND=noninteractive to suppress prompts
     if DEBIAN_FRONTEND=noninteractive apt-get install -y chrony; then
@@ -277,9 +280,6 @@ step_install_apt_packages() {
     else
         print_warning "chrony installation failed — time sync may need manual setup"
     fi
-
-    print_info "Restarting network services..."
-    systemctl restart systemd-networkd systemd-resolved || true
 
     print_info "Installing Python packages..."
     apt-get install -y \
