@@ -455,7 +455,7 @@ class ControlThread(Thread):
 
     def _create_backup_filename(self):
         current_time = self.info["time"]
-        date_and_time = datetime.datetime.utcfromtimestamp(current_time).strftime(
+        date_and_time = datetime.datetime.fromtimestamp(current_time).strftime(
             "%Y-%m-%d_%H-%M-%S"
         )
         device_id = self._info["id"]

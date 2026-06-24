@@ -89,3 +89,7 @@ start_dev_node.sh
 
 # Arduino user-specific config (use versions.h.example as template)
 accessories/hardware/ethoscope_multimodule/versions.h
+
+#MacOS
+.DS_Store
+**/.DS_Store
