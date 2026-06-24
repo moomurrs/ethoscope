@@ -414,6 +414,42 @@ class SQLiteResultWriter(BaseResultWriter):
             for dr in data_rows:
                 self._dam_file_helper.input_roi_data(t, roi, dr)
 
+    def _batch_insert_roi(self, roi_id, value_list):
+        """
+        Helper to insert ROI data in batches of 50 rows using compound INSERT statements.
+        Handles the pre-computation of the SQL string and the trailing layout edge-cases.
+        """
+        if not value_list:
+            return
+
+        num_cols = len(value_list[0])
+        single_row_placeholders = "(" + ", ".join(["?"] * num_cols) + ")"
+        batch_size = 50
+
+        # Pre-compute the query string layout for a perfect full batch of 50
+        full_batch_placeholders = ", ".join([single_row_placeholders] * batch_size)
+        full_batch_command = (
+            f"INSERT INTO ROI_{roi_id} VALUES {full_batch_placeholders}"
+        )
+
+        for i in range(0, len(value_list), batch_size):
+            batch = value_list[i : i + batch_size]
+            actual_batch_size = len(batch)
+
+            # If it's a standard batch of 50, use the pre-computed command string
+            if actual_batch_size == batch_size:
+                command = full_batch_command
+            else:
+                # Edge-case: Last batch contains fewer than 50 rows, adjust query dynamically
+                partial_placeholders = ", ".join(
+                    [single_row_placeholders] * actual_batch_size
+                )
+                command = f"INSERT INTO ROI_{roi_id} VALUES {partial_placeholders}"
+
+            # Flatten the multi-row data matrix into a 1D tuple of arguments
+            flattened_args = tuple(val for row in batch for val in row)
+            self._write_async_command(command, flattened_args)
+
     def flush(self, t, img=None):
         """
         Flush accumulated data to database using parameterized queries.
@@ -434,20 +470,11 @@ class SQLiteResultWriter(BaseResultWriter):
             if c_args is not None:
                 self._write_async_command(*c_args)
 
-        # Handle ROI data inserts with parameterized queries
+        # Handle ROI data inserts via chunked batch queries of 50 rows
         for roi_id, value_list in list(self._insert_dict.items()):
             if len(value_list) >= self._max_insert_string_len:
-                # Execute batch insert with parameterized query
                 if value_list:  # Only if we have data
-                    placeholders = ", ".join(
-                        ["?" for _ in value_list[0]]
-                    )  # Create ? placeholders
-                    command = f"INSERT INTO ROI_{roi_id} VALUES ({placeholders})"
-
-                    # Execute each row as individual parameterized query
-                    for values in value_list:
-                        self._write_async_command(command, values)
-
+                    self._batch_insert_roi(roi_id, value_list)
                     # Clear the list after flushing
                     self._insert_dict[roi_id] = []
         return False
@@ -458,18 +485,10 @@ class SQLiteResultWriter(BaseResultWriter):
 
         Ensures all accumulated data is written before shutdown.
         """
-        # Final flush of any remaining data
+        # Final flush of all remaining data in batches of 50 rows
         for roi_id, value_list in list(self._insert_dict.items()):
             if value_list:  # Only if we have data
-                placeholders = ", ".join(
-                    ["?" for _ in value_list[0]]
-                )  # Create ? placeholders
-                command = f"INSERT INTO ROI_{roi_id} VALUES ({placeholders})"
-
-                # Execute each row as individual parameterized query
-                for values in value_list:
-                    self._write_async_command(command, values)
-
+                self._batch_insert_roi(roi_id, value_list)
                 # Clear the list after flushing
                 self._insert_dict[roi_id] = []
 
@@ -555,7 +574,6 @@ class SQLiteResultWriter(BaseResultWriter):
             self._wait_for_queue_empty()
 
         elif not self._erase_old_db and getattr(self, "database_to_append", None):
-
             event = "appending"
             command = "INSERT INTO START_EVENTS VALUES (?, ?, ?)"
             self._write_async_command(command, (None, int(time.time()), event))
