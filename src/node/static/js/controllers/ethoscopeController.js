@@ -886,7 +886,7 @@
          * Convert Unix timestamp to readable date string
          */
         $scope.ethoscope.start_date_time = function(unix_timestamp) {
-            return new Date(unix_timestamp * 1000).toUTCString();
+            return new Date(unix_timestamp * 1000).toLocaleString();
         };
 
         /**
@@ -1649,10 +1649,10 @@
             // for the gate.
             if (deviceData.current_timestamp) {
                 $scope.device_timestamp = new Date(deviceData.current_timestamp * 1000);
-                $scope.device_datetime = $scope.device_timestamp.toUTCString();
+                $scope.device_datetime = $scope.device_timestamp.toLocaleString();
 
                 var local_time = new Date();
-                $scope.node_datetime = local_time.toUTCString();
+                $scope.node_datetime = local_time.toLocaleString();
                 $scope.delta_t_min = Math.abs((local_time.getTime() / 1000 - deviceData.current_timestamp) / 60);
 
                 // Auto-correct device clock if drift > 3 min (max 3 attempts per page load)
