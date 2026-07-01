@@ -1,2179 +1,2522 @@
-(function() {
-    'use strict';
+(function () {
+  "use strict";
 
-    var app = angular.module('flyApp');
+  var app = angular.module("flyApp");
 
-    /**
-     * Ethoscope Controller - Controls individual ethoscope device interface
-     * Manages tracking, recording, machine settings, and real-time updates
-     */
-    app.controller('ethoscopeController', function($scope, $http, $routeParams, $interval, ethoscopeBackupService, ethoscopeFormService) {
+  /**
+   * Ethoscope Controller - Controls individual ethoscope device interface
+   * Manages tracking, recording, machine settings, and real-time updates
+   */
+  app.controller(
+    "ethoscopeController",
+    function (
+      $scope,
+      $http,
+      $routeParams,
+      $interval,
+      ethoscopeBackupService,
+      ethoscopeFormService,
+    ) {
+      // ===========================
+      // INITIALIZATION & VARIABLES
+      // ===========================
 
-        // ===========================
-        // INITIALIZATION & VARIABLES
-        // ===========================
+      var device_id = $routeParams.device_id;
+      var refresh_data = null;
+      var spStart = null; // Initialize spinner when needed
+      var starting_tracking = document.getElementById("starting");
+      var $attempt = 0; // Time sync attempt counter
 
-        var device_id = $routeParams.device_id;
-        var refresh_data = null;
-        var spStart = null; // Initialize spinner when needed
-        var starting_tracking = document.getElementById('starting');
-        var $attempt = 0; // Time sync attempt counter
+      // Initialize scope variables
+      $scope.device = {}; // Device information and status
+      $scope.errorState = { dismissed: false }; // Error dismissal state (object for child scope inheritance)
+      $scope.ethoscope = {}; // Device control functions
+      $scope.machine_info = {}; // Hardware and system information
+      $scope.module_info = {}; // Full module capabilities from serial interrogation
+      $scope.firmware_status = {}; // Firmware version comparison info
+      $scope.firmware_updating = false; // True while firmware update in progress
+      $scope.firmware_update_result = null; // Result of last firmware update
+      $scope.user_options = {}; // Available tracking/recording options from server
+      $scope.selected_options = {}; // Currently selected options for forms
+      $scope.node = {
+        // Node-level data (users, incubators, sensors)
+        users: {},
+        incubators: {},
+        sensors: {},
+      };
+      $scope.videoBackupStatus = {
+        // Which rsync backup covers video files
+        loaded: false, // true once /node/daemons has been polled
+        service: null, // 'unified' | 'video' | null
+        daemon: null, // exact systemd unit name, for messaging
+      };
+      $scope.stimulatorSequence = []; // Array for stimulator sequence
 
-        // Initialize scope variables
-        $scope.device = {}; // Device information and status
-        $scope.errorState = { dismissed: false }; // Error dismissal state (object for child scope inheritance)
-        $scope.ethoscope = {}; // Device control functions
-        $scope.machine_info = {}; // Hardware and system information
-        $scope.module_info = {}; // Full module capabilities from serial interrogation
-        $scope.firmware_status = {}; // Firmware version comparison info
-        $scope.firmware_updating = false; // True while firmware update in progress
-        $scope.firmware_update_result = null; // Result of last firmware update
-        $scope.user_options = {}; // Available tracking/recording options from server
-        $scope.selected_options = {}; // Currently selected options for forms
-        $scope.node = { // Node-level data (users, incubators, sensors)
-            users: {},
-            incubators: {},
-            sensors: {}
-        };
-        $scope.videoBackupStatus = { // Which rsync backup covers video files
-            loaded: false,    // true once /node/daemons has been polled
-            service: null,    // 'unified' | 'video' | null
-            daemon: null      // exact systemd unit name, for messaging
-        };
-        $scope.stimulatorSequence = []; // Array for stimulator sequence
+      // Backup status cache
+      $scope.backupSummary = null; // Cached backup summary to prevent digest loops
+      $scope.lastBackupStatusLoad = 0; // Timestamp of last backup status load
 
-        // Backup status cache
-        $scope.backupSummary = null; // Cached backup summary to prevent digest loops
-        $scope.lastBackupStatusLoad = 0; // Timestamp of last backup status load
+      // UI state variables
+      $scope.showLog = false;
+      $scope.can_stream = false;
+      $scope.isActive = false;
 
-        // UI state variables
-        $scope.showLog = false;
-        $scope.can_stream = false;
-        $scope.isActive = false;
+      // Cache for static data to reduce repeated requests
+      var nodeConfigCache = {
+        data: null,
+        timestamp: 0,
+        maxAge: 5 * 60 * 1000, // Cache for 5 minutes
+      };
 
-        // Cache for static data to reduce repeated requests
-        var nodeConfigCache = {
-            data: null,
-            timestamp: 0,
-            maxAge: 5 * 60 * 1000 // Cache for 5 minutes
-        };
+      // Cache node server timestamp to avoid repeated requests
+      var nodeTimestampCache = {
+        timestamp: 0,
+        cachedAt: 0,
+        maxAge: 30 * 1000, // Cache for 30 seconds
+      };
 
-        // Cache node server timestamp to avoid repeated requests
-        var nodeTimestampCache = {
-            timestamp: 0,
-            cachedAt: 0,
-            maxAge: 30 * 1000 // Cache for 30 seconds
-        };
+      // Date range picker configuration for stimulator scheduling
+      // Initialize with safe defaults, will be updated when moment.js is available
+      $scope.dateRangeOptions = {
+        timePicker: true,
+        timePicker24Hour: true,
+        timePickerIncrement: 30,
+        drops: "up",
+        autoApply: true,
+        autoUpdateInput: false, // Prevent auto-update to avoid setStartDate errors
+        minDate: new Date(), // Will be updated to moment() when available
+        locale: {
+          format: "YYYY-MM-DD HH:mm:ss",
+          separator: " > ",
+          applyLabel: "Apply",
+          cancelLabel: "Cancel",
+          fromLabel: "From",
+          toLabel: "To",
+        },
+      };
 
-        // Date range picker configuration for stimulator scheduling
-        // Initialize with safe defaults, will be updated when moment.js is available
-        $scope.dateRangeOptions = {
-            timePicker: true,
-            timePicker24Hour: true,
-            timePickerIncrement: 30,
-            drops: 'up',
-            autoApply: true,
-            autoUpdateInput: false, // Prevent auto-update to avoid setStartDate errors
-            minDate: new Date(), // Will be updated to moment() when available
-            locale: {
-                format: 'YYYY-MM-DD HH:mm:ss',
-                separator: ' > ',
-                applyLabel: 'Apply',
-                cancelLabel: 'Cancel',
-                fromLabel: 'From',
-                toLabel: 'To'
-            }
-        };
+      // Centralized moment.js locale configuration
+      var momentLocaleConfigured = false;
 
-        // Centralized moment.js locale configuration
-        var momentLocaleConfigured = false;
-
-        function ensureMomentLocale() {
-            if (typeof moment !== 'undefined' && moment.locale && !momentLocaleConfigured) {
-                moment.locale('en');
-                momentLocaleConfigured = true;
-                console.log('Moment.js locale configured to: en');
-            }
-            return momentLocaleConfigured;
+      function ensureMomentLocale() {
+        if (
+          typeof moment !== "undefined" &&
+          moment.locale &&
+          !momentLocaleConfigured
+        ) {
+          moment.locale("en");
+          momentLocaleConfigured = true;
+          console.log("Moment.js locale configured to: en");
         }
-
-        // Update dateRangeOptions when moment.js becomes available
-        var momentCheckAttempts = 0;
-        var maxMomentCheckAttempts = 50; // Max 5 seconds (50 * 100ms)
-
-        function updateDateRangeOptions() {
-            if (typeof moment !== 'undefined' && moment.locale) {
-                // Ensure moment.js locale is configured
-                ensureMomentLocale();
-                $scope.dateRangeOptions.minDate = moment();
-                // Force Angular to update the view
-                if (!$scope.$$phase) {
-                    $scope.$apply();
-                }
-                console.log('Date range picker updated with moment.js');
-                return; // Exit successfully
-            } else {
-                momentCheckAttempts++;
-                if (momentCheckAttempts < maxMomentCheckAttempts) {
-                    // Retry after a short delay if moment isn't ready yet
-                    setTimeout(updateDateRangeOptions, 100);
-                } else {
-                    console.warn('Moment.js not available after ' + maxMomentCheckAttempts + ' attempts. Using fallback date configuration.');
-                    // Fallback to native Date for minDate
-                    $scope.dateRangeOptions.minDate = new Date();
-                }
-            }
-        }
-
-        // Start the check
-        updateDateRangeOptions();
-
-        // ===========================
-        // DATA LOADING FUNCTIONS
-        // ===========================
-
-        /**
-         * Poll daemon status to figure out which rsync service (if any)
-         * is currently covering video backup. The unified service covers
-         * both SQLite and video; ethoscope_backup_video is video-only.
-         */
-        function loadDaemons() {
-            $http.get('/node/daemons')
-                .then(function(response) {
-                    var daemons = response.data || {};
-                    var unified = daemons.ethoscope_backup_unified;
-                    var videoOnly = daemons.ethoscope_backup_video;
-
-                    if (unified && unified.active === 'active') {
-                        $scope.videoBackupStatus = {
-                            loaded: true,
-                            service: 'unified',
-                            daemon: 'ethoscope_backup_unified'
-                        };
-                    } else if (videoOnly && videoOnly.active === 'active') {
-                        $scope.videoBackupStatus = {
-                            loaded: true,
-                            service: 'video',
-                            daemon: 'ethoscope_backup_video'
-                        };
-                    } else {
-                        $scope.videoBackupStatus = {
-                            loaded: true,
-                            service: null,
-                            daemon: null
-                        };
-                    }
-                })
-                .catch(function(error) {
-                    console.warn('Failed to load daemon status:', error);
-                });
-        }
-
-        /**
-         * Load node-level data (users, incubators, sensors) - OPTIMIZED WITH CACHING
-         */
-        function loadNodeData() {
-            var now = new Date().getTime();
-
-            // Check if we have cached data that's still valid
-            if (nodeConfigCache.data && (now - nodeConfigCache.timestamp) < nodeConfigCache.maxAge) {
-                console.log('Using cached node configuration data');
-                $scope.node.users = nodeConfigCache.data.users;
-                $scope.node.incubators = nodeConfigCache.data.incubators;
-                $scope.node.sensors = nodeConfigCache.data.sensors;
-                $scope.node.device_options = nodeConfigCache.data.device_options;
-                $scope.node.timestamp = nodeConfigCache.data.timestamp;
-                return;
-            }
-
-            // Use batched endpoint to load all node config in one request
-            $http.get('/node/config')
-                .then(function(response) {
-                    // Update cache
-                    nodeConfigCache.data = response.data;
-                    nodeConfigCache.timestamp = now;
-
-                    // Update scope
-                    $scope.node.users = response.data.users;
-                    $scope.node.incubators = response.data.incubators;
-                    $scope.node.sensors = response.data.sensors;
-                    $scope.node.device_options = response.data.device_options;
-                    $scope.node.timestamp = response.data.timestamp;
-
-                    // Cache the node timestamp for time sync operations
-                    nodeTimestampCache.timestamp = response.data.timestamp;
-                    nodeTimestampCache.cachedAt = now;
-                })
-                .catch(function(error) {
-                    console.error('Failed to load node configuration:', error);
-                    // Fallback to individual requests if batch fails
-                    loadNodeDataFallback();
-                });
-        }
-
-        /**
-         * Fallback to individual requests if batched endpoint fails
-         */
-        function loadNodeDataFallback() {
-            // Load users
-            $http.get('/node/users')
-                .then(function(response) {
-                    $scope.node.users = response.data;
-                })
-                .catch(function(error) {
-                    console.error('Failed to load users:', error);
-                });
-
-            // Load incubators
-            $http.get('/node/incubators')
-                .then(function(response) {
-                    $scope.node.incubators = response.data;
-                })
-                .catch(function(error) {
-                    console.error('Failed to load incubators:', error);
-                });
-
-            // Load sensors
-            $http.get('/sensors')
-                .then(function(response) {
-                    $scope.node.sensors = response.data;
-                })
-                .catch(function(error) {
-                    console.error('Failed to load sensors:', error);
-                });
-        }
-
-        /**
-         * Load device-specific data - OPTIMIZED FOR SPEED
-         */
-        function loadDeviceData() {
-            // First, load the critical data immediately (device info + timestamp)
-            $http.get('/device/' + device_id + '/batch-critical')
-                .then(function(response) {
-                    var data = response.data;
-
-                    // Set device data immediately
-                    if (data.data) {
-                        $scope.device = data.data;
-                        // Device is active if it doesn't end with "_000"
-                        $scope.isActive = ($scope.device.name.split("_").pop() !== "000");
-
-                        // Update backup summary cache
-                        ethoscopeBackupService.updateBackupSummary($scope);
-
-                        // CRITICAL: Display timestamp immediately on load
-                        updateTimestampDisplay(data.data);
-
-                        // Initialize image URLs immediately for fast loading
-                        var timestamp = Math.floor(new Date().getTime() / 30000.0) * 30;
-                        $scope.device.url_img = "/device/" + $scope.device.id + "/last_img?" + timestamp;
-                        $scope.device.url_stream = '/device/' + device_id + '/stream';
-                    }
-
-                    // Now load the non-critical data in the background
-                    loadNonCriticalDeviceData();
-                })
-                .catch(function(error) {
-                    console.error('Failed to load critical device data:', error);
-                    // Fallback to individual requests if batch fails
-                    loadDeviceDataFallback();
-                });
-
-            // Load video files asynchronously (less critical)
-            loadVideoFilesAsync();
-        }
-
-        /**
-         * Load non-critical device data in background after critical data is loaded
-         */
-        function loadNonCriticalDeviceData() {
-            // Load machine info asynchronously, then fetch full module capabilities if connected
-            $http.get('/device/' + device_id + '/machineinfo')
-                .then(function(response) {
-                    $scope.machine_info = response.data;
-
-                    // Fetch full module capabilities via serial interrogation (slower, separate call)
-                    if ($scope.machine_info.Module && $scope.machine_info.Module.Connected) {
-                        $http.get('/device/' + device_id + '/module')
-                            .then(function(modResponse) {
-                                $scope.module_info = modResponse.data;
-
-                                // After module info loads, check firmware status
-                                $http.get('/device/' + device_id + '/firmware/status')
-                                    .then(function(fwResponse) {
-                                        $scope.firmware_status = fwResponse.data;
-                                    })
-                                    .catch(function(error) {
-                                        console.warn('Failed to load firmware status:', error);
-                                    });
-                            })
-                            .catch(function(error) {
-                                console.warn('Failed to load module capabilities:', error);
-                            });
-                    }
-                })
-                .catch(function(error) {
-                    console.error('Failed to load machine info:', error);
-                });
-
-            // Load user options asynchronously
-            $http.get('/device/' + device_id + '/user_options')
-                .then(function(response) {
-                    var userOptions = response.data;
-
-                    // Check streaming capability
-                    $scope.can_stream = (typeof userOptions.streaming !== 'undefined');
-
-                    // Store raw options data (preserves server order)
-                    $scope.user_options = {
-                        tracking: userOptions.tracking || {},
-                        recording: userOptions.recording || {},
-                        update_machine: userOptions.update_machine || {}
-                    };
-
-                    // Filter result_writer options based on configuration
-                    if ($scope.user_options.tracking && $scope.user_options.tracking.result_writer) {
-                        // Always remove dbAppender from UI options
-                        $scope.user_options.tracking.result_writer =
-                            $scope.user_options.tracking.result_writer.filter(function(writer) {
-                                return writer.name !== 'dbAppender';
-                            });
-
-                        // Remove MySQLResultWriter if disabled in configuration
-                        if ($scope.node.device_options && !$scope.node.device_options.enable_mysql_result_writer) {
-                            $scope.user_options.tracking.result_writer =
-                                $scope.user_options.tracking.result_writer.filter(function(writer) {
-                                    return writer.name !== 'MySQLResultWriter';
-                                });
-
-                            // Hide result_writer section and auto-select SQLiteResultWriter
-                            $scope.hideResultWriterSection = true;
-
-                            // Set default SQLiteResultWriter with correct arguments
-                            if (!$scope.selected_options.tracking) {
-                                $scope.selected_options.tracking = {};
-                            }
-                            $scope.selected_options.tracking.result_writer = {
-                                name: 'SQLiteResultWriter',
-                                arguments: {
-                                    take_frame_shots: true,
-                                    make_dam_like_table: true
-                                }
-                            };
-
-                            console.log('Result writer section hidden - auto-selected SQLiteResultWriter with DAM table enabled');
-                        } else {
-                            console.log('MySQLResultWriter available (enabled in node configuration)');
-                        }
-                    }
-
-                    // Initialize selected options with default values using service
-                    ethoscopeFormService.initializeSelectedOptions('tracking', userOptions.tracking || {}, $scope);
-                    ethoscopeFormService.initializeSelectedOptions('recording', userOptions.recording || {}, $scope);
-                    ethoscopeFormService.initializeSelectedOptions('update_machine', userOptions.update_machine || {}, $scope);
-
-                    // Check database availability for append functionality
-                    checkDatabaseAvailability();
-
-                    // Populate node.database_list for frontend dropdown
-                    updateNodeDatabaseList();
-
-                    // Load ROI templates AFTER user options are initialized
-                    $scope.loadRoiTemplates();
-                })
-                .catch(function(error) {
-                    console.error('Failed to load user options:', error);
-                });
-        }
-
-        /**
-         * Fallback to individual requests if batched endpoint fails
-         */
-        function loadDeviceDataFallback() {
-            // Load machine information
-            $http.get('/device/' + device_id + '/machineinfo')
-                .then(function(response) {
-                    $scope.machine_info = response.data;
-                })
-                .catch(function(error) {
-                    console.error('Failed to load machine info:', error);
-                });
-
-            // Load device data and determine if device is active
-            $http.get('/device/' + device_id + '/data')
-                .then(function(response) {
-                    $scope.device = response.data;
-                    // Device is active if it doesn't end with "_000"
-                    $scope.isActive = ($scope.device.name.split("_").pop() !== "000");
-
-                    // Update backup summary cache
-                    ethoscopeBackupService.updateBackupSummary($scope);
-
-                    // Initialize image URLs immediately for fast loading
-                    var timestamp = Math.floor(new Date().getTime() / 30000.0) * 30;
-                    $scope.device.url_img = "/device/" + $scope.device.id + "/last_img?" + timestamp;
-                    $scope.device.url_stream = '/device/' + device_id + '/stream';
-                })
-                .catch(function(error) {
-                    console.error('Failed to load device data:', error);
-                });
-        }
-
-        /**
-         * Load video files asynchronously (can be slow, so load separately)
-         */
-        function loadVideoFilesAsync() {
-            $http.get('/device/' + device_id + '/videofiles')
-                .then(function(response) {
-                    $scope.videofiles = response.data.filelist;
-                })
-                .catch(function(error) {
-                    console.error('Failed to load video files:', error);
-                    $scope.videofiles = [];
-                });
-        }
-
-        // ===========================
-        // FORM MANAGEMENT FUNCTIONS (Using Service)
-        // ===========================
-
-        /**
-         * Update user option arguments when selection changes
-         */
-        $scope.ethoscope.update_user_options = function(optionType, name, selectedOptionName) {
-            ethoscopeFormService.updateUserOptions(optionType, name, selectedOptionName, $scope);
-        };
-
-        // Convenience methods for different option types
-        $scope.ethoscope.update_user_options.tracking = function(name, selectedOptionName) {
-            ethoscopeFormService.updateUserOptions('tracking', name, selectedOptionName, $scope);
-        };
-
-        $scope.ethoscope.update_user_options.recording = function(name, selectedOptionName) {
-            ethoscopeFormService.updateUserOptions('recording', name, selectedOptionName, $scope);
-        };
-
-        $scope.ethoscope.update_user_options.update_machine = function(name, selectedOptionName) {
-            ethoscopeFormService.updateUserOptions('update_machine', name, selectedOptionName, $scope);
-        };
-
-        // Multi-stimulator functions (delegated to service)
-        $scope.getSelectedStimulatorOption = function(name) {
-            return ethoscopeFormService.getSelectedStimulatorOption(name, $scope);
-        };
-
-        $scope.getStimulatorArguments = function(className) {
-            return ethoscopeFormService.getStimulatorArguments(className, $scope);
-        };
-
-        $scope.addNewStimulator = function() {
-            ethoscopeFormService.addNewStimulator($scope);
-        };
-
-        $scope.removeStimulator = function(index) {
-            ethoscopeFormService.removeStimulator(index, $scope);
-        };
-
-        $scope.updateStimulatorArguments = function(index) {
-            ethoscopeFormService.updateStimulatorArguments(index, $scope);
-        };
-
-        $scope.addStimulatorToSequence = function() {
-            ethoscopeFormService.addStimulatorToSequence($scope);
-        };
-
-        $scope.removeStimulatorFromSequence = function(index) {
-            ethoscopeFormService.removeStimulatorFromSequence(index, $scope);
-        };
-
-        $scope.updateStimulatorInSequence = function(index) {
-            ethoscopeFormService.updateStimulatorInSequence(index, $scope);
-        };
-
-        $scope.getInteractorOptionByName = function(name) {
-            return ethoscopeFormService.getInteractorOptionByName(name, $scope);
-        };
-
-        $scope.isArgumentVisible = function(arg, currentArgValues) {
-            return ethoscopeFormService.isArgumentVisible(arg, currentArgValues);
-        };
-
-        /**
-         * Filter action_type options based on detected module capabilities.
-         * Falls back to showing all options if module info is unavailable.
-         */
-        $scope.getFilteredActionOptions = function(arg) {
-            if (arg.name !== 'action_type') return arg.options;
-            return ethoscopeFormService.getAvailableActions(arg.options, $scope.module_info);
-        };
-
-        $scope.isRoiTemplateSelected = function() {
-            return ethoscopeFormService.isRoiTemplateSelected($scope);
-        };
-
-        $scope.isUserSelected = function() {
-            return ethoscopeFormService.isUserSelected($scope);
-        };
-
-        $scope.isLocationSelected = function() {
-            return ethoscopeFormService.isLocationSelected($scope);
-        };
-
-        // ===========================
-        // BACKUP STATUS FUNCTIONS (Using Service)
-        // ===========================
-
-        function loadBackupInfo(forceLoad) {
-            ethoscopeBackupService.loadBackupInfo(device_id, $scope, forceLoad);
-        }
-
-        function updateBackupSummary() {
-            ethoscopeBackupService.updateBackupSummary($scope);
-        }
-
-        /**
-         * Get the keys of an object (helper for ng-repeat)
-         */
-        $scope.getObjectKeys = function(obj) {
-            return obj ? Object.keys(obj) : [];
-        };
-
-        /**
-         * Format file size in human readable format
-         */
-        $scope.formatFileSize = function(bytes) {
-            if (!bytes || bytes === 0) return '0 B';
-
-            var k = 1024;
-            var sizes = ['B', 'KB', 'MB', 'GB'];
-            var i = Math.floor(Math.log(bytes) / Math.log(k));
-
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-        };
-
-        /**
-         * Format date from Unix timestamp
-         */
-        $scope.formatDate = function(timestamp) {
-            if (!timestamp) return 'Unknown';
-
-            var date = new Date(timestamp * 1000);
-            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-        };
-
-        /**
-         * Extract datetime from database filename
-         */
-        $scope.extractDateTimeFromFilename = function(filename) {
-            if (!filename) return 'Unknown';
-
-            // Pattern to match database files like "device_2024-01-15_14-30-45.db"
-            var dateTimePattern = /(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})/;
-            var match = filename.match(dateTimePattern);
-
-            if (match) {
-                var dateTimeStr = match[1];
-                // Convert format from YYYY-MM-DD_HH-MM-SS to readable format
-                var parts = dateTimeStr.split('_');
-                if (parts.length === 2) {
-                    var datePart = parts[0]; // YYYY-MM-DD
-                    var timePart = parts[1].replace(/-/g, ':'); // HH:MM:SS
-
-                    try {
-                        var date = new Date(datePart + 'T' + timePart);
-                        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-                    } catch (e) {
-                        // If parsing fails, return the extracted datetime string
-                        return datePart + ' ' + timePart;
-                    }
-                }
-            }
-
-            // If no datetime pattern found, return just the base filename without extension
-            return filename.replace(/\.[^/.]+$/, "");
-        };
-
-        /**
-         * Get time since backup in human readable format
-         */
-        $scope.getTimeSinceBackup = function(timestamp) {
-            if (!timestamp) return 'Never';
-
-            var now = Math.floor(Date.now() / 1000);
-            var elapsed = now - timestamp;
-
-            if (elapsed < 60) {
-                return 'Just now';
-            } else if (elapsed < 3600) {
-                var minutes = Math.floor(elapsed / 60);
-                return minutes + ' minute' + (minutes > 1 ? 's' : '') + ' ago';
-            } else if (elapsed < 86400) {
-                var hours = Math.floor(elapsed / 3600);
-                return hours + ' hour' + (hours > 1 ? 's' : '') + ' ago';
-            } else {
-                var days = Math.floor(elapsed / 86400);
-                return days + ' day' + (days > 1 ? 's' : '') + ' ago';
-            }
-        };
-
-        /**
-         * Get backup status class for progress bar
-         */
-        $scope.getBackupBarClass = function(dbInfo, backupType) {
-            if (!dbInfo) return 'unknown';
-
-            // If using backup info
-            if ($scope.backupSummary && $scope.backupSummary.useBackupInfo && backupType && $scope.device.backup_info) {
-                var backupStatus = $scope.device.backup_info.backup_status[backupType];
-                if (backupStatus) {
-                    if (backupStatus.available && backupStatus.database_count > 0) {
-                        return 'backed-up';
-                    } else {
-                        return 'missing-backup';
-                    }
-                }
-            }
-
-            // Legacy fallback
-            if (dbInfo.file_exists === true) {
-                return 'backed-up';
-            } else if (dbInfo.file_exists === false) {
-                return 'missing-backup';
-            } else if (dbInfo.db_status === 'tracking') {
-                return 'processing';
-            } else {
-                return 'unknown';
-            }
-        };
-
-        /**
-         * Get backup progress style for the progress bar fill
-         */
-        $scope.getBackupProgressStyle = function(dbInfo, dbType) {
-            if (!dbInfo) return {
-                width: '0%'
-            };
-
-            var width = '0%';
-
-            // If using backup info
-            if ($scope.backupSummary && $scope.backupSummary.useBackupInfo && $scope.device.backup_info) {
-                var backupTypeMap = {
-                    'mariadb': 'mysql',
-                    'sqlite': 'sqlite',
-                    'video': 'video'
-                };
-                var mappedType = backupTypeMap[dbType] || dbType;
-                var backupStatus = $scope.device.backup_info.backup_status[mappedType];
-
-                if (backupStatus) {
-                    if (backupStatus.available && backupStatus.database_count > 0) {
-                        width = '100%';
-                    } else {
-                        width = '100%';
-                    }
-                }
-            } else {
-                // Legacy fallback
-                if (dbInfo.file_exists === true) {
-                    width = '100%';
-                } else if (dbInfo.file_exists === false) {
-                    width = '100%';
-                } else if (dbInfo.db_status === 'tracking') {
-                    width = '75%';
-                } else {
-                    width = '25%';
-                }
-            }
-
-            return {
-                width: width
-            };
-        };
-
-        /**
-         * Get backup status text for tooltip
-         */
-        $scope.getBackupStatusText = function(dbInfo, backupType) {
-            if (!dbInfo) return 'Unknown';
-
-            // If using backup info, try to get file path/name
-            if ($scope.backupSummary && $scope.backupSummary.useBackupInfo && backupType && $scope.device.backup_info) {
-
-                // For MySQL, get the backup filename from MariaDB databases
-                if (backupType === 'mysql' && $scope.device.databases && $scope.device.databases.MariaDB) {
-                    var filePaths = [];
-                    for (var dbName in $scope.device.databases.MariaDB) {
-                        if ($scope.device.databases.MariaDB.hasOwnProperty(dbName)) {
-                            var dbData = $scope.device.databases.MariaDB[dbName];
-                            if (dbData.backup_filename) {
-                                filePaths.push(dbData.backup_filename);
-                            } else if (dbData.path) {
-                                filePaths.push(dbData.path);
-                            } else {
-                                filePaths.push(dbName);
-                            }
-                        }
-                    }
-                    if (filePaths.length > 0) {
-                        return filePaths.join(', ');
-                    }
-                }
-
-                var backupStatus = $scope.device.backup_info.backup_status[backupType];
-                if (backupStatus) {
-                    if (backupStatus.available && backupStatus.database_count > 0) {
-                        return 'Available (' + backupStatus.database_count + ' db' + (backupStatus.database_count > 1 ? 's' : '') + ')';
-                    } else {
-                        return 'Not Available';
-                    }
-                }
-            }
-
-            // Legacy fallback
-            if (dbInfo.file_exists === true) {
-                return 'Backed Up';
-            } else if (dbInfo.file_exists === false) {
-                return 'Missing';
-            } else if (dbInfo.db_status === 'tracking') {
-                return 'In Progress';
-            } else {
-                return 'Unknown';
-            }
-        };
-
-        /**
-         * Get overall backup status class for the toggle icon
-         */
-        $scope.getBackupStatusClass = function() {
-            if (!$scope.backupSummary) {
-                return 'backup-status-unknown';
-            }
-
-            // Use backup info if available
-            if ($scope.backupSummary.useBackupInfo && $scope.device.backup_info) {
-                var recommendedType = $scope.device.backup_info.recommended_backup_type;
-                if (recommendedType === 'mysql' || recommendedType === 'sqlite') {
-                    return 'backup-status-success';
-                } else {
-                    return 'backup-status-warning';
-                }
-            }
-
-            // Legacy fallback
-            if ($scope.backupSummary.backedUp === $scope.backupSummary.total && $scope.backupSummary.total > 0) {
-                return 'backup-status-success';
-            } else if ($scope.backupSummary.backedUp === 0 && $scope.backupSummary.total > 0) {
-                return 'backup-status-error';
-            } else if ($scope.backupSummary.backedUp > 0) {
-                return 'backup-status-warning';
-            } else {
-                return 'backup-status-unknown';
-            }
-        };
-
-        /**
-         * Get backup summary statistics (cached)
-         */
-        $scope.getBackupSummary = function() {
-            return $scope.backupSummary;
-        };
-
-        /**
-         * Get overall status CSS class
-         */
-        $scope.getOverallStatusClass = function() {
-            if (!$scope.backupSummary) return 'overall-status-unknown';
-
-            // Use backup info if available
-            if ($scope.backupSummary.useBackupInfo && $scope.device.backup_info) {
-                var recommendedType = $scope.device.backup_info.recommended_backup_type;
-                if (recommendedType === 'mysql' || recommendedType === 'sqlite') {
-                    return 'overall-status-success';
-                } else {
-                    return 'overall-status-warning';
-                }
-            }
-
-            // Legacy fallback
-            if ($scope.backupSummary.backedUp === $scope.backupSummary.total && $scope.backupSummary.total > 0) {
-                return 'overall-status-success';
-            } else if ($scope.backupSummary.backedUp === 0 && $scope.backupSummary.total > 0) {
-                return 'overall-status-error';
-            } else if ($scope.backupSummary.backedUp > 0) {
-                return 'overall-status-warning';
-            } else {
-                return 'overall-status-unknown';
-            }
-        };
-
-        // ===========================
-        // UTILITY FUNCTIONS
-        // ===========================
-
-        /**
-         * Manage loading spinner display
-         */
-        function manageSpinner(action) {
-            if (action === 'start' && starting_tracking) {
-                spStart = new Spinner(opts).spin();
-                starting_tracking.appendChild(spStart.el);
-            } else if (action === 'stop' && spStart) {
-                spStart.stop();
-                spStart = null;
-            }
-        }
-
-        /**
-         * Get sensor IP address by location
-         */
-        $scope.get_ip_of_sensor = function(location) {
-            if (!location || !$scope.node.sensors) return null;
-
-            location = location.replace(/\s+/g, '_');
-            for (var sensor in $scope.node.sensors) {
-                if ($scope.node.sensors[sensor].location === location) {
-                    return $scope.node.sensors[sensor].ip;
-                }
-            }
-            return null;
-        };
-
-        /**
-         * Check if device has a valid (non-default) interactor
-         */
-        $scope.hasValidInteractor = function(device) {
-            return (
-                device.status === 'running' &&
-                device.experimental_info &&
-                device.experimental_info.current &&
-                device.experimental_info.current.interactor &&
-                device.experimental_info.current.interactor.name !== "<class 'ethoscope.stimulators.stimulators.DefaultStimulator'>"
+        return momentLocaleConfigured;
+      }
+
+      // Update dateRangeOptions when moment.js becomes available
+      var momentCheckAttempts = 0;
+      var maxMomentCheckAttempts = 50; // Max 5 seconds (50 * 100ms)
+
+      function updateDateRangeOptions() {
+        if (typeof moment !== "undefined" && moment.locale) {
+          // Ensure moment.js locale is configured
+          ensureMomentLocale();
+          $scope.dateRangeOptions.minDate = moment();
+          // Force Angular to update the view
+          if (!$scope.$$phase) {
+            $scope.$apply();
+          }
+          console.log("Date range picker updated with moment.js");
+          return; // Exit successfully
+        } else {
+          momentCheckAttempts++;
+          if (momentCheckAttempts < maxMomentCheckAttempts) {
+            // Retry after a short delay if moment isn't ready yet
+            setTimeout(updateDateRangeOptions, 100);
+          } else {
+            console.warn(
+              "Moment.js not available after " +
+                maxMomentCheckAttempts +
+                " attempts. Using fallback date configuration.",
             );
-        };
+            // Fallback to native Date for minDate
+            $scope.dateRangeOptions.minDate = new Date();
+          }
+        }
+      }
 
-        /**
-         * Calculate elapsed time from timestamp
-         */
-        $scope.ethoscope.elapsedtime = function(t) {
-            var now = Math.floor(Date.now() / 1000);
-            var elapsed = now - t;
+      // Start the check
+      updateDateRangeOptions();
 
-            var days = Math.floor(elapsed / 86400);
-            var hours = Math.floor((elapsed - (days * 86400)) / 3600);
-            var minutes = Math.floor((elapsed - (days * 86400) - (hours * 3600)) / 60);
-            var secs = Math.floor(elapsed - (days * 86400) - (hours * 3600) - (minutes * 60));
+      // ===========================
+      // DATA LOADING FUNCTIONS
+      // ===========================
 
-            var result = "";
-            if (days > 0) result += days + " days, ";
-            if (hours > 0 || days > 0) result += hours + "h, ";
-            if (minutes > 0 || hours > 0 || days > 0) result += minutes + "min, ";
-            result += secs + "s";
+      /**
+       * Poll daemon status to figure out which rsync service (if any)
+       * is currently covering video backup. The unified service covers
+       * both SQLite and video; ethoscope_backup_video is video-only.
+       */
+      function loadDaemons() {
+        $http
+          .get("/node/daemons")
+          .then(function (response) {
+            var daemons = response.data || {};
+            var unified = daemons.ethoscope_backup_unified;
+            var videoOnly = daemons.ethoscope_backup_video;
 
-            return result;
-        };
-
-        /**
-         * Create readable URL from full path
-         */
-        $scope.ethoscope.readable_url = function(url) {
-            if (!url) return '';
-            var parts = url.split("/");
-            return ".../"+parts[parts.length-1];
-        };
-
-        /**
-         * Convert Unix timestamp to readable date string
-         */
-        $scope.ethoscope.start_date_time = function(unix_timestamp) {
-            return new Date(unix_timestamp * 1000).toLocaleString();
-        };
-
-        /**
-         * Show alert message
-         */
-        $scope.ethoscope.alert = function(message) {
-            alert(message);
-        };
-
-        // Watch for changes in template selection to update UI
-        $scope.$watch('selected_options.tracking.roi_builder.arguments.template_name', function(newValue, oldValue) {
-            if (newValue !== oldValue) {
-                // Force UI update when template selection changes
-                $scope.$evalAsync();
-            }
-        });
-
-        // ===========================
-        // TRACKING & RECORDING FUNCTIONS
-        // ===========================
-
-        /**
-         * Start tracking with selected options
-         */
-        $scope.ethoscope.start_tracking = function(option) {
-            $("#startModal").modal('hide');
-            manageSpinner('start');
-
-            // Process arguments - extract formatted values from date range pickers
-            for (var opt in option) {
-                for (var arg in option[opt].arguments) {
-                    // Extract formatted field from date range picker objects
-                    if (option[opt].arguments[arg] &&
-                        typeof option[opt].arguments[arg] === 'object' &&
-                        option[opt].arguments[arg].hasOwnProperty('formatted')) {
-                        option[opt].arguments[arg] = option[opt].arguments[arg].formatted;
-                    }
-                }
-            }
-
-            // Add sensor IP and light schedule based on selected incubator name.
-            // Clock drift is handled by the auto-correct loop in
-            // updateTimestampDisplay (every refresh tick, max 3 attempts), which
-            // pushes the node's clock to the device via /update/<id>/datetime.
-            // The red warning icon in the status bar (ethoscope.html: delta_t_min > 3)
-            // still flags drift to the user.
-            if (option.experimental_info && option.experimental_info.arguments && option.experimental_info.arguments.location) {
-                var selectedIncubatorName = option.experimental_info.arguments.location;
-                option.experimental_info.arguments.sensor = $scope.get_ip_of_sensor(selectedIncubatorName);
-
-                // Inject light schedule from incubator configuration
-                if ($scope.node.incubators && $scope.node.incubators[selectedIncubatorName]) {
-                    var incubator = $scope.node.incubators[selectedIncubatorName];
-                    if (incubator.lights_on && incubator.lights_off) {
-                        option.experimental_info.arguments.lights_on = incubator.lights_on;
-                        option.experimental_info.arguments.lights_off = incubator.lights_off;
-                        // Period defaults to 1440 (24h, wall-clock) when absent.
-                        option.experimental_info.arguments.light_period_minutes =
-                            parseInt(incubator.light_period_minutes, 10) || 1440;
-                        // Anchor is per-incubator and pushed verbatim so all
-                        // devices in this incubator share the same ZT0.
-                        // Empty string means "wall-clock midnight" mode.
-                        option.experimental_info.arguments.light_cycle_anchor =
-                            (incubator.light_cycle_anchor !== null && incubator.light_cycle_anchor !== undefined)
-                                ? String(incubator.light_cycle_anchor)
-                                : '';
-                    }
-                }
-            }
-
-            // Include stimulator sequence in the data sent to backend
-            if ($scope.stimulatorSequence && $scope.stimulatorSequence.length > 0) {
-                // Process stimulator sequence date range pickers
-                for (var i = 0; i < $scope.stimulatorSequence.length; i++) {
-                    var stimulator = $scope.stimulatorSequence[i];
-                    if (stimulator.arguments) {
-                        for (var argName in stimulator.arguments) {
-                            // Extract formatted field from date range picker objects
-                            if (stimulator.arguments[argName] &&
-                                typeof stimulator.arguments[argName] === 'object' &&
-                                stimulator.arguments[argName].hasOwnProperty('formatted')) {
-                                stimulator.arguments[argName] = stimulator.arguments[argName].formatted;
-                            }
-                        }
-                    }
-                }
-
-                // If only one stimulator, use it directly without MultiStimulator wrapper
-                if ($scope.stimulatorSequence.length === 1) {
-                    var singleStimulator = $scope.stimulatorSequence[0];
-
-                    // Create arguments object including date_range
-                    var stimulatorArguments = {};
-                    if (singleStimulator.arguments) {
-                        for (var key in singleStimulator.arguments) {
-                            stimulatorArguments[key] = singleStimulator.arguments[key];
-                        }
-                    }
-
-                    option.interactor = {
-                        name: singleStimulator.name,
-                        arguments: stimulatorArguments
-                    };
-
-                    console.log('Configured single stimulator:', singleStimulator.name, 'with arguments:', stimulatorArguments);
-
-                } else {
-                    // Multiple stimulators - use MultiStimulator configuration
-                    option.interactor = {
-                        name: 'MultiStimulator',
-                        arguments: {
-                            stimulator_sequence: $scope.stimulatorSequence.map(function(stim) {
-                                // Create a clean copy of arguments without the date_range
-                                var cleanArguments = {};
-                                if (stim.arguments) {
-                                    for (var key in stim.arguments) {
-                                        if (key !== 'date_range') {
-                                            cleanArguments[key] = stim.arguments[key];
-                                        }
-                                    }
-                                }
-
-                                return {
-                                    class_name: stim.name,
-                                    arguments: cleanArguments,
-                                    date_range: (stim.arguments && stim.arguments.date_range) ?
-                                        (typeof stim.arguments.date_range === 'string' ? stim.arguments.date_range : '') : ''
-                                };
-                            })
-                        }
-                    };
-
-                    // Sanitize the data to prevent JSON errors
-                    try {
-                        JSON.stringify(option.interactor.arguments.stimulator_sequence);
-                        console.log('Configured MultiStimulator with sequence:', option.interactor.arguments.stimulator_sequence);
-                    } catch (jsonError) {
-                        console.error('JSON serialization error in stimulator sequence:', jsonError);
-                        console.log('Raw stimulator sequence:', $scope.stimulatorSequence);
-                        // Fallback to DefaultStimulator if JSON serialization fails
-                        option.interactor = {
-                            name: 'DefaultStimulator',
-                            arguments: {}
-                        };
-                    }
-                }
+            if (unified && unified.active === "active") {
+              $scope.videoBackupStatus = {
+                loaded: true,
+                service: "unified",
+                daemon: "ethoscope_backup_unified",
+              };
+            } else if (videoOnly && videoOnly.active === "active") {
+              $scope.videoBackupStatus = {
+                loaded: true,
+                service: "video",
+                daemon: "ethoscope_backup_video",
+              };
             } else {
-                // If no stimulators in sequence, use DefaultStimulator
-                if (!option.interactor || !option.interactor.name) {
-                    option.interactor = {
-                        name: 'DefaultStimulator',
-                        arguments: {}
-                    };
-                }
+              $scope.videoBackupStatus = {
+                loaded: true,
+                service: null,
+                daemon: null,
+              };
+            }
+          })
+          .catch(function (error) {
+            console.warn("Failed to load daemon status:", error);
+          });
+      }
+
+      /**
+       * Load node-level data (users, incubators, sensors) - OPTIMIZED WITH CACHING
+       */
+      function loadNodeData() {
+        var now = new Date().getTime();
+
+        // Check if we have cached data that's still valid
+        if (
+          nodeConfigCache.data &&
+          now - nodeConfigCache.timestamp < nodeConfigCache.maxAge
+        ) {
+          console.log("Using cached node configuration data");
+          $scope.node.users = nodeConfigCache.data.users;
+          $scope.node.incubators = nodeConfigCache.data.incubators;
+          $scope.node.sensors = nodeConfigCache.data.sensors;
+          $scope.node.device_options = nodeConfigCache.data.device_options;
+          $scope.node.timestamp = nodeConfigCache.data.timestamp;
+          return;
+        }
+
+        // Use batched endpoint to load all node config in one request
+        $http
+          .get("/node/config")
+          .then(function (response) {
+            // Update cache
+            nodeConfigCache.data = response.data;
+            nodeConfigCache.timestamp = now;
+
+            // Update scope
+            $scope.node.users = response.data.users;
+            $scope.node.incubators = response.data.incubators;
+            $scope.node.sensors = response.data.sensors;
+            $scope.node.device_options = response.data.device_options;
+            $scope.node.timestamp = response.data.timestamp;
+
+            // Cache the node timestamp for time sync operations
+            nodeTimestampCache.timestamp = response.data.timestamp;
+            nodeTimestampCache.cachedAt = now;
+          })
+          .catch(function (error) {
+            console.error("Failed to load node configuration:", error);
+            // Fallback to individual requests if batch fails
+            loadNodeDataFallback();
+          });
+      }
+
+      /**
+       * Fallback to individual requests if batched endpoint fails
+       */
+      function loadNodeDataFallback() {
+        // Load users
+        $http
+          .get("/node/users")
+          .then(function (response) {
+            $scope.node.users = response.data;
+          })
+          .catch(function (error) {
+            console.error("Failed to load users:", error);
+          });
+
+        // Load incubators
+        $http
+          .get("/node/incubators")
+          .then(function (response) {
+            $scope.node.incubators = response.data;
+          })
+          .catch(function (error) {
+            console.error("Failed to load incubators:", error);
+          });
+
+        // Load sensors
+        $http
+          .get("/sensors")
+          .then(function (response) {
+            $scope.node.sensors = response.data;
+          })
+          .catch(function (error) {
+            console.error("Failed to load sensors:", error);
+          });
+      }
+
+      /**
+       * Load device-specific data - OPTIMIZED FOR SPEED
+       */
+      function loadDeviceData() {
+        // First, load the critical data immediately (device info + timestamp)
+        $http
+          .get("/device/" + device_id + "/batch-critical")
+          .then(function (response) {
+            var data = response.data;
+
+            // Set device data immediately
+            if (data.data) {
+              $scope.device = data.data;
+              // Device is active if it doesn't end with "_000"
+              $scope.isActive = $scope.device.name.split("_").pop() !== "000";
+
+              // Update backup summary cache
+              ethoscopeBackupService.updateBackupSummary($scope);
+
+              // CRITICAL: Display timestamp immediately on load
+              updateTimestampDisplay(data.data);
+
+              // Initialize image URLs immediately for fast loading
+              var timestamp = Math.floor(new Date().getTime() / 30000.0) * 30;
+              $scope.device.url_img =
+                "/device/" + $scope.device.id + "/last_img?" + timestamp;
+              $scope.device.url_stream = "/device/" + device_id + "/stream";
             }
 
-            // Check if we need to handle custom template transfer for FileBasedROIBuilder
-            var templateName = null;
-            var isCustomTemplate = false;
+            // Now load the non-critical data in the background
+            loadNonCriticalDeviceData();
+          })
+          .catch(function (error) {
+            console.error("Failed to load critical device data:", error);
+            // Fallback to individual requests if batch fails
+            loadDeviceDataFallback();
+          });
 
-            if (option.roi_builder && option.roi_builder.arguments && option.roi_builder.arguments.template_name) {
-                templateName = option.roi_builder.arguments.template_name;
+        // Load video files asynchronously (less critical)
+        loadVideoFilesAsync();
+      }
 
-                // Check if this is a custom template by looking at the selected option
-                var selectedTemplateInfo = $scope.getSelectedTemplateInfo(templateName);
-                isCustomTemplate = selectedTemplateInfo && selectedTemplateInfo.type === 'custom';
+      /**
+       * Load non-critical device data in background after critical data is loaded
+       */
+      function loadNonCriticalDeviceData() {
+        // Load machine info asynchronously, then fetch full module capabilities if connected
+        $http
+          .get("/device/" + device_id + "/machineinfo")
+          .then(function (response) {
+            $scope.machine_info = response.data;
 
-                if (isCustomTemplate && templateName) {
-                    // For custom templates, ensure they're transferred to the device
-                    console.log("Custom template detected: " + templateName + ". Uploading to device if needed.");
-                    $scope.uploadTemplateToDevice(templateName, function(success) {
-                        if (success) {
-                            console.log("Custom template uploaded successfully");
-                        } else {
-                            console.log("Custom template upload failed, proceeding anyway");
-                        }
-                        startTrackingWithData();
-                    });
-                } else {
-                    // For builtin templates, no transfer needed
-                    if (templateName) {
-                        console.log("Builtin template detected: " + templateName + ". No transfer needed.");
-                    }
+            // Fetch full module capabilities via serial interrogation (slower, separate call)
+            if (
+              $scope.machine_info.Module &&
+              $scope.machine_info.Module.Connected
+            ) {
+              $http
+                .get("/device/" + device_id + "/module")
+                .then(function (modResponse) {
+                  $scope.module_info = modResponse.data;
 
-                    console.log('Starting tracking with options:', option);
-
-                    // Send start command to ethoscope
-                    $http.post('/device/' + device_id + '/controls/start', option)
-                        .then(function(response) {
-                            $scope.device.status = response.data.status;
-                            // Refresh device data after starting
-                            refreshDeviceStatus();
-                        })
-                        .catch(function(error) {
-                            console.error('Failed to start tracking:', error);
-                            manageSpinner('stop');
-                        });
-                }
-            } else {
-                // ROI builder without template_name (e.g., TargetGridROIBuilder)
-                console.log('Starting tracking with options (no template):', option);
-
-                $http.post('/device/' + device_id + '/controls/start', option)
-                    .then(function(response) {
-                        $scope.device.status = response.data.status;
-                        refreshDeviceStatus();
+                  // After module info loads, check firmware status
+                  $http
+                    .get("/device/" + device_id + "/firmware/status")
+                    .then(function (fwResponse) {
+                      $scope.firmware_status = fwResponse.data;
                     })
-                    .catch(function(error) {
-                        console.error('Failed to start tracking:', error);
-                        manageSpinner('stop');
+                    .catch(function (error) {
+                      console.warn("Failed to load firmware status:", error);
                     });
+                })
+                .catch(function (error) {
+                  console.warn("Failed to load module capabilities:", error);
+                });
             }
-        };
+          })
+          .catch(function (error) {
+            console.error("Failed to load machine info:", error);
+          });
 
-        // Helper function to get template information by name
-        $scope.getSelectedTemplateInfo = function(templateName) {
-            if ($scope.available_templates) {
-                for (var i = 0; i < $scope.available_templates.length; i++) {
-                    if ($scope.available_templates[i].value === templateName) {
-                        return $scope.available_templates[i];
-                    }
+        // Load user options asynchronously
+        $http
+          .get("/device/" + device_id + "/user_options")
+          .then(function (response) {
+            var userOptions = response.data;
+
+            // Check streaming capability
+            $scope.can_stream = typeof userOptions.streaming !== "undefined";
+
+            // Store raw options data (preserves server order)
+            $scope.user_options = {
+              tracking: userOptions.tracking || {},
+              recording: userOptions.recording || {},
+              update_machine: userOptions.update_machine || {},
+            };
+
+            // Filter result_writer options based on configuration
+            if (
+              $scope.user_options.tracking &&
+              $scope.user_options.tracking.result_writer
+            ) {
+              // Always remove dbAppender from UI options
+              $scope.user_options.tracking.result_writer =
+                $scope.user_options.tracking.result_writer.filter(
+                  function (writer) {
+                    return writer.name !== "dbAppender";
+                  },
+                );
+
+              // Remove MySQLResultWriter if disabled in configuration
+              if (
+                $scope.node.device_options &&
+                !$scope.node.device_options.enable_mysql_result_writer
+              ) {
+                $scope.user_options.tracking.result_writer =
+                  $scope.user_options.tracking.result_writer.filter(
+                    function (writer) {
+                      return writer.name !== "MySQLResultWriter";
+                    },
+                  );
+
+                // Hide result_writer section and auto-select SQLiteResultWriter
+                $scope.hideResultWriterSection = true;
+
+                // Set default SQLiteResultWriter with correct arguments
+                if (!$scope.selected_options.tracking) {
+                  $scope.selected_options.tracking = {};
                 }
-            }
-            return null;
-        };
+                $scope.selected_options.tracking.result_writer = {
+                  name: "SQLiteResultWriter",
+                  arguments: {
+                    take_frame_shots: true,
+                    make_dam_like_table: true,
+                  },
+                };
 
-        // Load ROI templates from node server
-        $scope.loadRoiTemplates = function() {
-            $http.get('/roi_templates').then(function(response) {
-                var data = response.data;
-                // Store template information for later use
-                $scope.available_templates = data.templates;
-
-                // Find default template if any
-                var defaultTemplate = null;
-                for (var k = 0; k < data.templates.length; k++) {
-                    if (data.templates[k].is_default === true) {
-                        defaultTemplate = data.templates[k].value;
-                        break;
-                    }
-                }
-
-                // Store default template for later use
-                $scope.defaultTemplate = defaultTemplate;
-
-                // Update template dropdown options for FileBasedROIBuilder
-                if ($scope.user_options && $scope.user_options.tracking &&
-                    $scope.user_options.tracking.roi_builder) {
-
-                    for (var i = 0; i < $scope.user_options.tracking.roi_builder.length; i++) {
-                        var roiBuilder = $scope.user_options.tracking.roi_builder[i];
-
-                        // Check if this is a FileBasedROIBuilder
-                        if (roiBuilder.name === 'FileBasedROIBuilder' ||
-                            roiBuilder.class === 'FileBasedROIBuilder') {
-
-                            // Find template_name argument
-                            for (var j = 0; j < roiBuilder.arguments.length; j++) {
-                                var arg = roiBuilder.arguments[j];
-                                if (arg.name === 'template_name') {
-                                    // Separate builtin and custom templates
-                                    var builtinTemplates = data.templates.filter(function(template) {
-                                        return template.type === 'builtin';
-                                    }).map(function(template) {
-                                        return {
-                                            value: template.value,
-                                            text: template.text
-                                        };
-                                    });
-
-                                    var customTemplates = data.templates.filter(function(template) {
-                                        return template.type === 'custom';
-                                    }).map(function(template) {
-                                        return {
-                                            value: template.value,
-                                            text: template.text
-                                        };
-                                    });
-
-                                    // Create grouped structure
-                                    var groups = [];
-                                    if (builtinTemplates.length > 0) {
-                                        groups.push({
-                                            group: "builtin",
-                                            label: "Built-in Templates",
-                                            options: builtinTemplates
-                                        });
-                                    }
-                                    if (customTemplates.length > 0) {
-                                        groups.push({
-                                            group: "custom",
-                                            label: "Custom Templates",
-                                            options: customTemplates
-                                        });
-                                    }
-
-                                    // Set the groups structure
-                                    arg.groups = groups;
-                                    // Remove old options if it exists
-                                    delete arg.options;
-
-                                    // Apply default template selection
-                                    $scope.applyDefaultTemplate();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }, function(error) {
-                console.log("Could not load ROI templates from node server");
-            });
-        };
-
-        // Helper function to apply default template selection
-        $scope.applyDefaultTemplate = function() {
-            if (!$scope.defaultTemplate) {
-                console.log('No default template found');
-                return;
+                console.log(
+                  "Result writer section hidden - auto-selected SQLiteResultWriter with DAM table enabled",
+                );
+              } else {
+                console.log(
+                  "MySQLResultWriter available (enabled in node configuration)",
+                );
+              }
             }
 
-            if (!$scope.selected_options || !$scope.selected_options.tracking || !$scope.selected_options.tracking.roi_builder) {
-                console.log('ROI builder not initialized yet');
-                return;
+            // Initialize selected options with default values using service
+            ethoscopeFormService.initializeSelectedOptions(
+              "tracking",
+              userOptions.tracking || {},
+              $scope,
+            );
+            ethoscopeFormService.initializeSelectedOptions(
+              "recording",
+              userOptions.recording || {},
+              $scope,
+            );
+            ethoscopeFormService.initializeSelectedOptions(
+              "update_machine",
+              userOptions.update_machine || {},
+              $scope,
+            );
+
+            // Check database availability for append functionality
+            checkDatabaseAvailability();
+
+            // Populate node.database_list for frontend dropdown
+            updateNodeDatabaseList();
+
+            // Load ROI templates AFTER user options are initialized
+            $scope.loadRoiTemplates();
+          })
+          .catch(function (error) {
+            console.error("Failed to load user options:", error);
+          });
+      }
+
+      /**
+       * Fallback to individual requests if batched endpoint fails
+       */
+      function loadDeviceDataFallback() {
+        // Load machine information
+        $http
+          .get("/device/" + device_id + "/machineinfo")
+          .then(function (response) {
+            $scope.machine_info = response.data;
+          })
+          .catch(function (error) {
+            console.error("Failed to load machine info:", error);
+          });
+
+        // Load device data and determine if device is active
+        $http
+          .get("/device/" + device_id + "/data")
+          .then(function (response) {
+            $scope.device = response.data;
+            // Device is active if it doesn't end with "_000"
+            $scope.isActive = $scope.device.name.split("_").pop() !== "000";
+
+            // Update backup summary cache
+            ethoscopeBackupService.updateBackupSummary($scope);
+
+            // Initialize image URLs immediately for fast loading
+            var timestamp = Math.floor(new Date().getTime() / 30000.0) * 30;
+            $scope.device.url_img =
+              "/device/" + $scope.device.id + "/last_img?" + timestamp;
+            $scope.device.url_stream = "/device/" + device_id + "/stream";
+          })
+          .catch(function (error) {
+            console.error("Failed to load device data:", error);
+          });
+      }
+
+      /**
+       * Load video files asynchronously (can be slow, so load separately)
+       */
+      function loadVideoFilesAsync() {
+        $http
+          .get("/device/" + device_id + "/videofiles")
+          .then(function (response) {
+            $scope.videofiles = response.data.filelist;
+          })
+          .catch(function (error) {
+            console.error("Failed to load video files:", error);
+            $scope.videofiles = [];
+          });
+      }
+
+      // ===========================
+      // FORM MANAGEMENT FUNCTIONS (Using Service)
+      // ===========================
+
+      /**
+       * Update user option arguments when selection changes
+       */
+      $scope.ethoscope.update_user_options = function (
+        optionType,
+        name,
+        selectedOptionName,
+      ) {
+        ethoscopeFormService.updateUserOptions(
+          optionType,
+          name,
+          selectedOptionName,
+          $scope,
+        );
+      };
+
+      // Convenience methods for different option types
+      $scope.ethoscope.update_user_options.tracking = function (
+        name,
+        selectedOptionName,
+      ) {
+        ethoscopeFormService.updateUserOptions(
+          "tracking",
+          name,
+          selectedOptionName,
+          $scope,
+        );
+      };
+
+      $scope.ethoscope.update_user_options.recording = function (
+        name,
+        selectedOptionName,
+      ) {
+        ethoscopeFormService.updateUserOptions(
+          "recording",
+          name,
+          selectedOptionName,
+          $scope,
+        );
+      };
+
+      $scope.ethoscope.update_user_options.update_machine = function (
+        name,
+        selectedOptionName,
+      ) {
+        ethoscopeFormService.updateUserOptions(
+          "update_machine",
+          name,
+          selectedOptionName,
+          $scope,
+        );
+      };
+
+      // Multi-stimulator functions (delegated to service)
+      $scope.getSelectedStimulatorOption = function (name) {
+        return ethoscopeFormService.getSelectedStimulatorOption(name, $scope);
+      };
+
+      $scope.getStimulatorArguments = function (className) {
+        return ethoscopeFormService.getStimulatorArguments(className, $scope);
+      };
+
+      $scope.addNewStimulator = function () {
+        ethoscopeFormService.addNewStimulator($scope);
+      };
+
+      $scope.removeStimulator = function (index) {
+        ethoscopeFormService.removeStimulator(index, $scope);
+      };
+
+      $scope.updateStimulatorArguments = function (index) {
+        ethoscopeFormService.updateStimulatorArguments(index, $scope);
+      };
+
+      $scope.addStimulatorToSequence = function () {
+        ethoscopeFormService.addStimulatorToSequence($scope);
+      };
+
+      $scope.removeStimulatorFromSequence = function (index) {
+        ethoscopeFormService.removeStimulatorFromSequence(index, $scope);
+      };
+
+      $scope.updateStimulatorInSequence = function (index) {
+        ethoscopeFormService.updateStimulatorInSequence(index, $scope);
+      };
+
+      $scope.getInteractorOptionByName = function (name) {
+        return ethoscopeFormService.getInteractorOptionByName(name, $scope);
+      };
+
+      $scope.isArgumentVisible = function (arg, currentArgValues) {
+        return ethoscopeFormService.isArgumentVisible(arg, currentArgValues);
+      };
+
+      /**
+       * Filter action_type options based on detected module capabilities.
+       * Falls back to showing all options if module info is unavailable.
+       */
+      $scope.getFilteredActionOptions = function (arg) {
+        if (arg.name !== "action_type") return arg.options;
+        return ethoscopeFormService.getAvailableActions(
+          arg.options,
+          $scope.module_info,
+        );
+      };
+
+      $scope.isRoiTemplateSelected = function () {
+        return ethoscopeFormService.isRoiTemplateSelected($scope);
+      };
+
+      $scope.isUserSelected = function () {
+        return ethoscopeFormService.isUserSelected($scope);
+      };
+
+      $scope.isLocationSelected = function () {
+        return ethoscopeFormService.isLocationSelected($scope);
+      };
+
+      // ===========================
+      // BACKUP STATUS FUNCTIONS (Using Service)
+      // ===========================
+
+      function loadBackupInfo(forceLoad) {
+        ethoscopeBackupService.loadBackupInfo(device_id, $scope, forceLoad);
+      }
+
+      function updateBackupSummary() {
+        ethoscopeBackupService.updateBackupSummary($scope);
+      }
+
+      /**
+       * Get the keys of an object (helper for ng-repeat)
+       */
+      $scope.getObjectKeys = function (obj) {
+        return obj ? Object.keys(obj) : [];
+      };
+
+      /**
+       * Format file size in human readable format
+       */
+      $scope.formatFileSize = function (bytes) {
+        if (!bytes || bytes === 0) return "0 B";
+
+        var k = 1024;
+        var sizes = ["B", "KB", "MB", "GB"];
+        var i = Math.floor(Math.log(bytes) / Math.log(k));
+
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+      };
+
+      /**
+       * Format date from Unix timestamp
+       */
+      $scope.formatDate = function (timestamp) {
+        if (!timestamp) return "Unknown";
+
+        var date = new Date(timestamp * 1000);
+        return date.toLocaleDateString() + " " + date.toLocaleTimeString();
+      };
+
+      /**
+       * Extract datetime from database filename
+       */
+      $scope.extractDateTimeFromFilename = function (filename) {
+        if (!filename) return "Unknown";
+
+        // Pattern to match database files like "device_2024-01-15_14-30-45.db"
+        var dateTimePattern = /(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})/;
+        var match = filename.match(dateTimePattern);
+
+        if (match) {
+          var dateTimeStr = match[1];
+          // Convert format from YYYY-MM-DD_HH-MM-SS to readable format
+          var parts = dateTimeStr.split("_");
+          if (parts.length === 2) {
+            var datePart = parts[0]; // YYYY-MM-DD
+            var timePart = parts[1].replace(/-/g, ":"); // HH:MM:SS
+
+            try {
+              var date = new Date(datePart + "T" + timePart);
+              return (
+                date.toLocaleDateString() + " " + date.toLocaleTimeString()
+              );
+            } catch (e) {
+              // If parsing fails, return the extracted datetime string
+              return datePart + " " + timePart;
             }
+          }
+        }
 
-            // Check if FileBasedROIBuilder is selected
-            var roiBuilderName = $scope.selected_options.tracking.roi_builder.name;
-            if (!roiBuilderName || roiBuilderName.indexOf('FileBasedROIBuilder') === -1) {
-                console.log('FileBasedROIBuilder not selected, current:', roiBuilderName);
-                return;
-            }
+        // If no datetime pattern found, return just the base filename without extension
+        return filename.replace(/\.[^/.]+$/, "");
+      };
 
-            // Ensure arguments object exists
-            if (!$scope.selected_options.tracking.roi_builder.arguments) {
-                $scope.selected_options.tracking.roi_builder.arguments = {};
-            }
+      /**
+       * Get time since backup in human readable format
+       */
+      $scope.getTimeSinceBackup = function (timestamp) {
+        if (!timestamp) return "Never";
 
-            // Only set default if no template is currently selected or if it's empty
-            var currentTemplate = $scope.selected_options.tracking.roi_builder.arguments.template_name;
-            if (!currentTemplate || currentTemplate === '' || currentTemplate === 'null' || currentTemplate === 'undefined') {
-                $scope.selected_options.tracking.roi_builder.arguments.template_name = $scope.defaultTemplate;
-                console.log('Default ROI template applied:', $scope.defaultTemplate);
+        var now = Math.floor(Date.now() / 1000);
+        var elapsed = now - timestamp;
 
-                // Force Angular digest cycle
-                setTimeout(function() {
-                    if (!$scope.$$phase) {
-                        $scope.$apply();
-                    }
-                }, 0);
+        if (elapsed < 60) {
+          return "Just now";
+        } else if (elapsed < 3600) {
+          var minutes = Math.floor(elapsed / 60);
+          return minutes + " minute" + (minutes > 1 ? "s" : "") + " ago";
+        } else if (elapsed < 86400) {
+          var hours = Math.floor(elapsed / 3600);
+          return hours + " hour" + (hours > 1 ? "s" : "") + " ago";
+        } else {
+          var days = Math.floor(elapsed / 86400);
+          return days + " day" + (days > 1 ? "s" : "") + " ago";
+        }
+      };
+
+      /**
+       * Get backup status class for progress bar
+       */
+      $scope.getBackupBarClass = function (dbInfo, backupType) {
+        if (!dbInfo) return "unknown";
+
+        // If using backup info
+        if (
+          $scope.backupSummary &&
+          $scope.backupSummary.useBackupInfo &&
+          backupType &&
+          $scope.device.backup_info
+        ) {
+          var backupStatus =
+            $scope.device.backup_info.backup_status[backupType];
+          if (backupStatus) {
+            if (backupStatus.available && backupStatus.database_count > 0) {
+              return "backed-up";
             } else {
-                console.log('Template already selected:', currentTemplate);
+              return "missing-backup";
             }
+          }
+        }
+
+        // Legacy fallback
+        if (dbInfo.file_exists === true) {
+          return "backed-up";
+        } else if (dbInfo.file_exists === false) {
+          return "missing-backup";
+        } else if (dbInfo.db_status === "tracking") {
+          return "processing";
+        } else {
+          return "unknown";
+        }
+      };
+
+      /**
+       * Get backup progress style for the progress bar fill
+       */
+      $scope.getBackupProgressStyle = function (dbInfo, dbType) {
+        if (!dbInfo)
+          return {
+            width: "0%",
+          };
+
+        var width = "0%";
+
+        // If using backup info
+        if (
+          $scope.backupSummary &&
+          $scope.backupSummary.useBackupInfo &&
+          $scope.device.backup_info
+        ) {
+          var backupTypeMap = {
+            mariadb: "mysql",
+            sqlite: "sqlite",
+            video: "video",
+          };
+          var mappedType = backupTypeMap[dbType] || dbType;
+          var backupStatus =
+            $scope.device.backup_info.backup_status[mappedType];
+
+          if (backupStatus) {
+            if (backupStatus.available && backupStatus.database_count > 0) {
+              width = "100%";
+            } else {
+              width = "100%";
+            }
+          }
+        } else {
+          // Legacy fallback
+          if (dbInfo.file_exists === true) {
+            width = "100%";
+          } else if (dbInfo.file_exists === false) {
+            width = "100%";
+          } else if (dbInfo.db_status === "tracking") {
+            width = "75%";
+          } else {
+            width = "25%";
+          }
+        }
+
+        return {
+          width: width,
         };
+      };
 
-        // Upload template to device when needed
-        $scope.uploadTemplateToDevice = function(templateName, callback) {
-            $http.post('/device/' + device_id + '/upload_template', {
-                    template_name: templateName
-                })
-                .then(function(response) {
-                    var data = response.data;
-                    console.log("Template uploaded to device: " + templateName);
-                    if (callback) callback(true);
-                }, function(error) {
-                    console.log("Failed to upload template to device: " + templateName);
-                    if (callback) callback(false);
-                });
-        };
+      /**
+       * Get backup status text for tooltip
+       */
+      $scope.getBackupStatusText = function (dbInfo, backupType) {
+        if (!dbInfo) return "Unknown";
 
-        /**
-         * Start video recording with selected options
-         */
-        $scope.ethoscope.start_recording = function(option) {
-            $("#recordModal").modal('hide');
-            manageSpinner('start');
-
-            // Process datetime arguments - extract timestamp from Date objects
-            for (var opt in option) {
-                for (var arg in option[opt].arguments) {
-                    if (option[opt].arguments[arg] &&
-                        Array.isArray(option[opt].arguments[arg]) &&
-                        option[opt].arguments[arg][0] instanceof Date) {
-                        option[opt].arguments[arg] = option[opt].arguments[arg][1]; // Use timestamp
-                    }
+        // If using backup info, try to get file path/name
+        if (
+          $scope.backupSummary &&
+          $scope.backupSummary.useBackupInfo &&
+          backupType &&
+          $scope.device.backup_info
+        ) {
+          // For MySQL, get the backup filename from MariaDB databases
+          if (
+            backupType === "mysql" &&
+            $scope.device.databases &&
+            $scope.device.databases.MariaDB
+          ) {
+            var filePaths = [];
+            for (var dbName in $scope.device.databases.MariaDB) {
+              if ($scope.device.databases.MariaDB.hasOwnProperty(dbName)) {
+                var dbData = $scope.device.databases.MariaDB[dbName];
+                if (dbData.backup_filename) {
+                  filePaths.push(dbData.backup_filename);
+                } else if (dbData.path) {
+                  filePaths.push(dbData.path);
+                } else {
+                  filePaths.push(dbName);
                 }
+              }
             }
+            if (filePaths.length > 0) {
+              return filePaths.join(", ");
+            }
+          }
 
-            // Add sensor IP and light schedule based on selected incubator name
-            if (option.experimental_info && option.experimental_info.arguments && option.experimental_info.arguments.location) {
-                var selectedIncubatorName = option.experimental_info.arguments.location;
-                option.experimental_info.arguments.sensor = $scope.get_ip_of_sensor(selectedIncubatorName);
+          var backupStatus =
+            $scope.device.backup_info.backup_status[backupType];
+          if (backupStatus) {
+            if (backupStatus.available && backupStatus.database_count > 0) {
+              return (
+                "Available (" +
+                backupStatus.database_count +
+                " db" +
+                (backupStatus.database_count > 1 ? "s" : "") +
+                ")"
+              );
+            } else {
+              return "Not Available";
+            }
+          }
+        }
 
-                if ($scope.node.incubators && $scope.node.incubators[selectedIncubatorName]) {
-                    var incubator = $scope.node.incubators[selectedIncubatorName];
-                    if (incubator.lights_on && incubator.lights_off) {
-                        option.experimental_info.arguments.lights_on = incubator.lights_on;
-                        option.experimental_info.arguments.lights_off = incubator.lights_off;
-                        option.experimental_info.arguments.light_period_minutes =
-                            parseInt(incubator.light_period_minutes, 10) || 1440;
-                        option.experimental_info.arguments.light_cycle_anchor =
-                            (incubator.light_cycle_anchor !== null && incubator.light_cycle_anchor !== undefined)
-                                ? String(incubator.light_cycle_anchor)
-                                : '';
-                    }
+        // Legacy fallback
+        if (dbInfo.file_exists === true) {
+          return "Backed Up";
+        } else if (dbInfo.file_exists === false) {
+          return "Missing";
+        } else if (dbInfo.db_status === "tracking") {
+          return "In Progress";
+        } else {
+          return "Unknown";
+        }
+      };
+
+      /**
+       * Get overall backup status class for the toggle icon
+       */
+      $scope.getBackupStatusClass = function () {
+        if (!$scope.backupSummary) {
+          return "backup-status-unknown";
+        }
+
+        // Use backup info if available
+        if ($scope.backupSummary.useBackupInfo && $scope.device.backup_info) {
+          var recommendedType =
+            $scope.device.backup_info.recommended_backup_type;
+          if (recommendedType === "mysql" || recommendedType === "sqlite") {
+            return "backup-status-success";
+          } else {
+            return "backup-status-warning";
+          }
+        }
+
+        // Legacy fallback
+        if (
+          $scope.backupSummary.backedUp === $scope.backupSummary.total &&
+          $scope.backupSummary.total > 0
+        ) {
+          return "backup-status-success";
+        } else if (
+          $scope.backupSummary.backedUp === 0 &&
+          $scope.backupSummary.total > 0
+        ) {
+          return "backup-status-error";
+        } else if ($scope.backupSummary.backedUp > 0) {
+          return "backup-status-warning";
+        } else {
+          return "backup-status-unknown";
+        }
+      };
+
+      /**
+       * Get backup summary statistics (cached)
+       */
+      $scope.getBackupSummary = function () {
+        return $scope.backupSummary;
+      };
+
+      /**
+       * Get overall status CSS class
+       */
+      $scope.getOverallStatusClass = function () {
+        if (!$scope.backupSummary) return "overall-status-unknown";
+
+        // Use backup info if available
+        if ($scope.backupSummary.useBackupInfo && $scope.device.backup_info) {
+          var recommendedType =
+            $scope.device.backup_info.recommended_backup_type;
+          if (recommendedType === "mysql" || recommendedType === "sqlite") {
+            return "overall-status-success";
+          } else {
+            return "overall-status-warning";
+          }
+        }
+
+        // Legacy fallback
+        if (
+          $scope.backupSummary.backedUp === $scope.backupSummary.total &&
+          $scope.backupSummary.total > 0
+        ) {
+          return "overall-status-success";
+        } else if (
+          $scope.backupSummary.backedUp === 0 &&
+          $scope.backupSummary.total > 0
+        ) {
+          return "overall-status-error";
+        } else if ($scope.backupSummary.backedUp > 0) {
+          return "overall-status-warning";
+        } else {
+          return "overall-status-unknown";
+        }
+      };
+
+      // ===========================
+      // UTILITY FUNCTIONS
+      // ===========================
+
+      /**
+       * Manage loading spinner display
+       */
+      function manageSpinner(action) {
+        if (action === "start" && starting_tracking) {
+          spStart = new Spinner(opts).spin();
+          starting_tracking.appendChild(spStart.el);
+        } else if (action === "stop" && spStart) {
+          spStart.stop();
+          spStart = null;
+        }
+      }
+
+      /**
+       * Get sensor IP address by location
+       */
+      $scope.get_ip_of_sensor = function (location) {
+        if (!location || !$scope.node.sensors) return null;
+
+        location = location.replace(/\s+/g, "_");
+        for (var sensor in $scope.node.sensors) {
+          if ($scope.node.sensors[sensor].location === location) {
+            return $scope.node.sensors[sensor].ip;
+          }
+        }
+        return null;
+      };
+
+      /**
+       * Check if device has a valid (non-default) interactor
+       */
+      $scope.hasValidInteractor = function (device) {
+        return (
+          device.status === "running" &&
+          device.experimental_info &&
+          device.experimental_info.current &&
+          device.experimental_info.current.interactor &&
+          device.experimental_info.current.interactor.name !==
+            "<class 'ethoscope.stimulators.stimulators.DefaultStimulator'>"
+        );
+      };
+
+      /**
+       * Calculate elapsed time from timestamp
+       */
+      $scope.ethoscope.elapsedtime = function (t) {
+        var now = Math.floor(Date.now() / 1000);
+        var elapsed = now - t;
+
+        var days = Math.floor(elapsed / 86400);
+        var hours = Math.floor((elapsed - days * 86400) / 3600);
+        var minutes = Math.floor((elapsed - days * 86400 - hours * 3600) / 60);
+        var secs = Math.floor(
+          elapsed - days * 86400 - hours * 3600 - minutes * 60,
+        );
+
+        var result = "";
+        if (days > 0) result += days + " days, ";
+        if (hours > 0 || days > 0) result += hours + "h, ";
+        if (minutes > 0 || hours > 0 || days > 0) result += minutes + "min, ";
+        result += secs + "s";
+
+        return result;
+      };
+
+      /**
+       * Create readable URL from full path
+       */
+      $scope.ethoscope.readable_url = function (url) {
+        if (!url) return "";
+        var parts = url.split("/");
+        return ".../" + parts[parts.length - 1];
+      };
+
+      /**
+       * Convert Unix timestamp to readable date string
+       */
+      $scope.ethoscope.start_date_time = function (unix_timestamp) {
+        return new Date(unix_timestamp * 1000).toLocaleString();
+      };
+
+      /**
+       * Show alert message
+       */
+      $scope.ethoscope.alert = function (message) {
+        alert(message);
+      };
+
+      // Watch for changes in template selection to update UI
+      $scope.$watch(
+        "selected_options.tracking.roi_builder.arguments.template_name",
+        function (newValue, oldValue) {
+          if (newValue !== oldValue) {
+            // Force UI update when template selection changes
+            $scope.$evalAsync();
+          }
+        },
+      );
+
+      // ===========================
+      // TRACKING & RECORDING FUNCTIONS
+      // ===========================
+
+      /**
+       * Start tracking with selected options
+       */
+      $scope.ethoscope.start_tracking = function (option) {
+        $("#startModal").modal("hide");
+        manageSpinner("start");
+
+        // Process arguments - extract formatted values from date range pickers
+        for (var opt in option) {
+          for (var arg in option[opt].arguments) {
+            // Extract formatted field from date range picker objects
+            if (
+              option[opt].arguments[arg] &&
+              typeof option[opt].arguments[arg] === "object" &&
+              option[opt].arguments[arg].hasOwnProperty("formatted")
+            ) {
+              option[opt].arguments[arg] = option[opt].arguments[arg].formatted;
+            }
+          }
+        }
+
+        // Add sensor IP and light schedule based on selected incubator name.
+        // Clock drift is handled by the auto-correct loop in
+        // updateTimestampDisplay (every refresh tick, max 3 attempts), which
+        // pushes the node's clock to the device via /update/<id>/datetime.
+        // The red warning icon in the status bar (ethoscope.html: delta_t_min > 3)
+        // still flags drift to the user.
+        if (
+          option.experimental_info &&
+          option.experimental_info.arguments &&
+          option.experimental_info.arguments.location
+        ) {
+          var selectedIncubatorName =
+            option.experimental_info.arguments.location;
+          option.experimental_info.arguments.sensor = $scope.get_ip_of_sensor(
+            selectedIncubatorName,
+          );
+
+          // Inject light schedule from incubator configuration
+          if (
+            $scope.node.incubators &&
+            $scope.node.incubators[selectedIncubatorName]
+          ) {
+            var incubator = $scope.node.incubators[selectedIncubatorName];
+            if (incubator.lights_on && incubator.lights_off) {
+              option.experimental_info.arguments.lights_on =
+                incubator.lights_on;
+              option.experimental_info.arguments.lights_off =
+                incubator.lights_off;
+              // Period defaults to 1440 (24h, wall-clock) when absent.
+              option.experimental_info.arguments.light_period_minutes =
+                parseInt(incubator.light_period_minutes, 10) || 1440;
+              // Anchor is per-incubator and pushed verbatim so all
+              // devices in this incubator share the same ZT0.
+              // Empty string means "wall-clock midnight" mode.
+              option.experimental_info.arguments.light_cycle_anchor =
+                incubator.light_cycle_anchor !== null &&
+                incubator.light_cycle_anchor !== undefined
+                  ? String(incubator.light_cycle_anchor)
+                  : "";
+            }
+          }
+        }
+
+        // Include stimulator sequence in the data sent to backend
+        if ($scope.stimulatorSequence && $scope.stimulatorSequence.length > 0) {
+          // Process stimulator sequence date range pickers
+          for (var i = 0; i < $scope.stimulatorSequence.length; i++) {
+            var stimulator = $scope.stimulatorSequence[i];
+            if (stimulator.arguments) {
+              for (var argName in stimulator.arguments) {
+                // Extract formatted field from date range picker objects
+                if (
+                  stimulator.arguments[argName] &&
+                  typeof stimulator.arguments[argName] === "object" &&
+                  stimulator.arguments[argName].hasOwnProperty("formatted")
+                ) {
+                  stimulator.arguments[argName] =
+                    stimulator.arguments[argName].formatted;
                 }
+              }
+            }
+          }
+
+          // If only one stimulator, use it directly without MultiStimulator wrapper
+          if ($scope.stimulatorSequence.length === 1) {
+            var singleStimulator = $scope.stimulatorSequence[0];
+
+            // Create arguments object including date_range
+            var stimulatorArguments = {};
+            if (singleStimulator.arguments) {
+              for (var key in singleStimulator.arguments) {
+                stimulatorArguments[key] = singleStimulator.arguments[key];
+              }
             }
 
-            $http.post('/device/' + device_id + '/controls/start_record', option)
-                .then(function(response) {
-                    $scope.device.status = response.data.status;
-                    $scope.device.countdown = response.data.autostop;
-                    refreshDeviceStatus();
-                })
-                .catch(function(error) {
-                    console.error('Failed to start recording:', error);
-                    manageSpinner('stop');
-                });
-        };
+            option.interactor = {
+              name: singleStimulator.name,
+              arguments: stimulatorArguments,
+            };
 
-        /**
-         * Stop current tracking or recording
-         */
-        $scope.ethoscope.stop = function() {
-            console.log("Stopping tracking/recording");
-            $http.post('/device/' + device_id + '/controls/stop', {})
-                .then(function(response) {
-                    $scope.device.status = response.data.status;
-                })
-                .catch(function(error) {
-                    console.error('Failed to stop:', error);
-                });
-        };
-
-        // ===========================
-        // DEVICE CONTROL FUNCTIONS
-        // ===========================
-
-        /**
-         * Update machine settings
-         */
-        $scope.ethoscope.update_machine = function(option) {
-            $("#changeInfo").modal('hide');
-            $http.post('/device/' + device_id + '/machineinfo', option)
-                .then(function(response) {
-                    $scope.machine_info = response.data;
-
-                    // Immediately refresh device data to show updated time/settings
-                    refreshDeviceStatus();
-
-                    if (response.data.haschanged) {
-                        $scope.ethoscope.alert("Some settings have changed. Please REBOOT your ethoscope now.");
+            console.log(
+              "Configured single stimulator:",
+              singleStimulator.name,
+              "with arguments:",
+              stimulatorArguments,
+            );
+          } else {
+            // Multiple stimulators - use MultiStimulator configuration
+            option.interactor = {
+              name: "MultiStimulator",
+              arguments: {
+                stimulator_sequence: $scope.stimulatorSequence.map(
+                  function (stim) {
+                    // Create a clean copy of arguments without the date_range
+                    var cleanArguments = {};
+                    if (stim.arguments) {
+                      for (var key in stim.arguments) {
+                        if (key !== "date_range") {
+                          cleanArguments[key] = stim.arguments[key];
+                        }
+                      }
                     }
-                })
-                .catch(function(error) {
-                    console.error('Failed to update machine info:', error);
-                });
-        };
 
-        /**
-         * Power off the ethoscope device
-         */
-        $scope.ethoscope.poweroff = function() {
-            $http.post('/device/' + device_id + '/controls/poweroff', {})
-                .then(function(response) {
-                    $scope.device = response.data;
-                    window.close();
-                })
-                .catch(function(error) {
-                    console.error('Failed to power off:', error);
-                });
-        };
+                    return {
+                      class_name: stim.name,
+                      arguments: cleanArguments,
+                      date_range:
+                        stim.arguments && stim.arguments.date_range
+                          ? typeof stim.arguments.date_range === "string"
+                            ? stim.arguments.date_range
+                            : ""
+                          : "",
+                    };
+                  },
+                ),
+              },
+            };
 
-        /**
-         * Reboot the ethoscope device
-         */
-        $scope.ethoscope.reboot = function() {
-            console.log("Rebooting ethoscope");
-            $http.post('/device/' + device_id + '/controls/reboot', {})
-                .then(function(response) {
-                    $scope.device = response.data;
-                    window.close();
-                })
-                .catch(function(error) {
-                    console.error('Failed to reboot:', error);
-                });
-        };
+            // Sanitize the data to prevent JSON errors
+            try {
+              JSON.stringify(option.interactor.arguments.stimulator_sequence);
+              console.log(
+                "Configured MultiStimulator with sequence:",
+                option.interactor.arguments.stimulator_sequence,
+              );
+            } catch (jsonError) {
+              console.error(
+                "JSON serialization error in stimulator sequence:",
+                jsonError,
+              );
+              console.log(
+                "Raw stimulator sequence:",
+                $scope.stimulatorSequence,
+              );
+              // Fallback to DefaultStimulator if JSON serialization fails
+              option.interactor = {
+                name: "DefaultStimulator",
+                arguments: {},
+              };
+            }
+          }
+        } else {
+          // If no stimulators in sequence, use DefaultStimulator
+          if (!option.interactor || !option.interactor.name) {
+            option.interactor = {
+              name: "DefaultStimulator",
+              arguments: {},
+            };
+          }
+        }
 
-        /**
-         * Restart ethoscope software (without rebooting hardware)
-         */
-        $scope.ethoscope.restart = function() {
-            console.log("Restarting ethoscope software");
-            $http.post('/device/' + device_id + '/controls/restart', {})
-                .then(function(response) {
-                    $scope.device = response.data;
-                })
-                .catch(function(error) {
-                    console.error('Failed to restart:', error);
-                });
-        };
+        // Check if we need to handle custom template transfer for FileBasedROIBuilder
+        var templateName = null;
+        var isCustomTemplate = false;
 
-        // ===========================
-        // STREAMING & VIDEO FUNCTIONS
-        // ===========================
+        if (
+          option.roi_builder &&
+          option.roi_builder.arguments &&
+          option.roi_builder.arguments.template_name
+        ) {
+          templateName = option.roi_builder.arguments.template_name;
 
-        /**
-         * Start real-time video streaming
-         */
-        $scope.ethoscope.stream = function() {
-            if (!$scope.can_stream) {
-                console.warn("Streaming not available for this device");
-                return;
+          // Check if this is a custom template by looking at the selected option
+          var selectedTemplateInfo =
+            $scope.getSelectedTemplateInfo(templateName);
+          isCustomTemplate =
+            selectedTemplateInfo && selectedTemplateInfo.type === "custom";
+
+          if (isCustomTemplate && templateName) {
+            // For custom templates, ensure they're transferred to the device
+            console.log(
+              "Custom template detected: " +
+                templateName +
+                ". Uploading to device if needed.",
+            );
+            $scope.uploadTemplateToDevice(templateName, function (success) {
+              if (success) {
+                console.log("Custom template uploaded successfully");
+              } else {
+                console.log("Custom template upload failed, proceeding anyway");
+              }
+              startTrackingWithData();
+            });
+          } else {
+            // For builtin templates, no transfer needed
+            if (templateName) {
+              console.log(
+                "Builtin template detected: " +
+                  templateName +
+                  ". No transfer needed.",
+              );
             }
 
-            console.log("Starting real-time stream");
-            $http.post('/device/' + device_id + '/controls/stream', {
-                    recorder: {
-                        name: "Streamer",
-                        arguments: {}
+            console.log("Starting tracking with options:", option);
+
+            // Send start command to ethoscope
+            $http
+              .post("/device/" + device_id + "/controls/start", option)
+              .then(function (response) {
+                $scope.device.status = response.data.status;
+                // Refresh device data after starting
+                refreshDeviceStatus();
+              })
+              .catch(function (error) {
+                console.error("Failed to start tracking:", error);
+                manageSpinner("stop");
+              });
+          }
+        } else {
+          // ROI builder without template_name (e.g., TargetGridROIBuilder)
+          console.log("Starting tracking with options (no template):", option);
+
+          $http
+            .post("/device/" + device_id + "/controls/start", option)
+            .then(function (response) {
+              $scope.device.status = response.data.status;
+              refreshDeviceStatus();
+            })
+            .catch(function (error) {
+              console.error("Failed to start tracking:", error);
+              manageSpinner("stop");
+            });
+        }
+      };
+
+      // Helper function to get template information by name
+      $scope.getSelectedTemplateInfo = function (templateName) {
+        if ($scope.available_templates) {
+          for (var i = 0; i < $scope.available_templates.length; i++) {
+            if ($scope.available_templates[i].value === templateName) {
+              return $scope.available_templates[i];
+            }
+          }
+        }
+        return null;
+      };
+
+      // Load ROI templates from node server
+      $scope.loadRoiTemplates = function () {
+        $http.get("/roi_templates").then(
+          function (response) {
+            var data = response.data;
+            // Store template information for later use
+            $scope.available_templates = data.templates;
+
+            // Find default template if any
+            var defaultTemplate = null;
+            for (var k = 0; k < data.templates.length; k++) {
+              if (data.templates[k].is_default === true) {
+                defaultTemplate = data.templates[k].value;
+                break;
+              }
+            }
+
+            // Store default template for later use
+            $scope.defaultTemplate = defaultTemplate;
+
+            // Update template dropdown options for FileBasedROIBuilder
+            if (
+              $scope.user_options &&
+              $scope.user_options.tracking &&
+              $scope.user_options.tracking.roi_builder
+            ) {
+              for (
+                var i = 0;
+                i < $scope.user_options.tracking.roi_builder.length;
+                i++
+              ) {
+                var roiBuilder = $scope.user_options.tracking.roi_builder[i];
+
+                // Check if this is a FileBasedROIBuilder
+                if (
+                  roiBuilder.name === "FileBasedROIBuilder" ||
+                  roiBuilder.class === "FileBasedROIBuilder"
+                ) {
+                  // Find template_name argument
+                  for (var j = 0; j < roiBuilder.arguments.length; j++) {
+                    var arg = roiBuilder.arguments[j];
+                    if (arg.name === "template_name") {
+                      // Separate builtin and custom templates
+                      var builtinTemplates = data.templates
+                        .filter(function (template) {
+                          return template.type === "builtin";
+                        })
+                        .map(function (template) {
+                          return {
+                            value: template.value,
+                            text: template.text,
+                          };
+                        });
+
+                      var customTemplates = data.templates
+                        .filter(function (template) {
+                          return template.type === "custom";
+                        })
+                        .map(function (template) {
+                          return {
+                            value: template.value,
+                            text: template.text,
+                          };
+                        });
+
+                      // Create grouped structure
+                      var groups = [];
+                      if (builtinTemplates.length > 0) {
+                        groups.push({
+                          group: "builtin",
+                          label: "Built-in Templates",
+                          options: builtinTemplates,
+                        });
+                      }
+                      if (customTemplates.length > 0) {
+                        groups.push({
+                          group: "custom",
+                          label: "Custom Templates",
+                          options: customTemplates,
+                        });
+                      }
+
+                      // Set the groups structure
+                      arg.groups = groups;
+                      // Remove old options if it exists
+                      delete arg.options;
+
+                      // Apply default template selection
+                      $scope.applyDefaultTemplate();
+                      break;
                     }
-                })
-                .then(function(response) {
-                    $scope.device.status = response.data.status;
-                    window.location.reload();
-                })
-                .catch(function(error) {
-                    console.error('Failed to start stream:', error);
-                });
-        };
+                  }
+                }
+              }
+            }
+          },
+          function (error) {
+            console.log("Could not load ROI templates from node server");
+          },
+        );
+      };
 
-        /**
-         * Convert H264 video chunks to MP4 format
-         */
-        $scope.ethoscope.convertvideos = function() {
-            console.log("Converting H264 chunks to MP4");
-            $http.post('/device/' + device_id + '/controls/convertvideos')
-                .then(function(response) {
-                    $scope.device.status = response.data.status;
-                    window.location.reload();
-                })
-                .catch(function(error) {
-                    console.error('Failed to convert videos:', error);
-                });
-        };
+      // Helper function to apply default template selection
+      $scope.applyDefaultTemplate = function () {
+        if (!$scope.defaultTemplate) {
+          console.log("No default template found");
+          return;
+        }
 
-        // ===========================
-        // MAINTENANCE FUNCTIONS
-        // ===========================
+        if (
+          !$scope.selected_options ||
+          !$scope.selected_options.tracking ||
+          !$scope.selected_options.tracking.roi_builder
+        ) {
+          console.log("ROI builder not initialized yet");
+          return;
+        }
 
-        // Backup configuration state
-        $scope.backupConfig = {
-            type: 'none',
-            backupDatabases: true,
-            backupVideos: false,
-            loading: false
-        };
+        // Check if FileBasedROIBuilder is selected
+        var roiBuilderName = $scope.selected_options.tracking.roi_builder.name;
+        if (
+          !roiBuilderName ||
+          roiBuilderName.indexOf("FileBasedROIBuilder") === -1
+        ) {
+          console.log(
+            "FileBasedROIBuilder not selected, current:",
+            roiBuilderName,
+          );
+          return;
+        }
+
+        // Ensure arguments object exists
+        if (!$scope.selected_options.tracking.roi_builder.arguments) {
+          $scope.selected_options.tracking.roi_builder.arguments = {};
+        }
+
+        // Only set default if no template is currently selected or if it's empty
+        var currentTemplate =
+          $scope.selected_options.tracking.roi_builder.arguments.template_name;
+        if (
+          !currentTemplate ||
+          currentTemplate === "" ||
+          currentTemplate === "null" ||
+          currentTemplate === "undefined"
+        ) {
+          $scope.selected_options.tracking.roi_builder.arguments.template_name =
+            $scope.defaultTemplate;
+          console.log("Default ROI template applied:", $scope.defaultTemplate);
+
+          // Force Angular digest cycle
+          setTimeout(function () {
+            if (!$scope.$$phase) {
+              $scope.$apply();
+            }
+          }, 0);
+        } else {
+          console.log("Template already selected:", currentTemplate);
+        }
+      };
+
+      // Upload template to device when needed
+      $scope.uploadTemplateToDevice = function (templateName, callback) {
+        $http
+          .post("/device/" + device_id + "/upload_template", {
+            template_name: templateName,
+          })
+          .then(
+            function (response) {
+              var data = response.data;
+              console.log("Template uploaded to device: " + templateName);
+              if (callback) callback(true);
+            },
+            function (error) {
+              console.log(
+                "Failed to upload template to device: " + templateName,
+              );
+              if (callback) callback(false);
+            },
+          );
+      };
+
+      /**
+       * Start video recording with selected options
+       */
+      $scope.ethoscope.start_recording = function (option) {
+        $("#recordModal").modal("hide");
+        manageSpinner("start");
+
+        // Process datetime arguments - extract timestamp from Date objects
+        for (var opt in option) {
+          for (var arg in option[opt].arguments) {
+            if (
+              option[opt].arguments[arg] &&
+              Array.isArray(option[opt].arguments[arg]) &&
+              option[opt].arguments[arg][0] instanceof Date
+            ) {
+              option[opt].arguments[arg] = option[opt].arguments[arg][1]; // Use timestamp
+            }
+          }
+        }
+
+        // Add sensor IP and light schedule based on selected incubator name
+        if (
+          option.experimental_info &&
+          option.experimental_info.arguments &&
+          option.experimental_info.arguments.location
+        ) {
+          var selectedIncubatorName =
+            option.experimental_info.arguments.location;
+          option.experimental_info.arguments.sensor = $scope.get_ip_of_sensor(
+            selectedIncubatorName,
+          );
+
+          if (
+            $scope.node.incubators &&
+            $scope.node.incubators[selectedIncubatorName]
+          ) {
+            var incubator = $scope.node.incubators[selectedIncubatorName];
+            if (incubator.lights_on && incubator.lights_off) {
+              option.experimental_info.arguments.lights_on =
+                incubator.lights_on;
+              option.experimental_info.arguments.lights_off =
+                incubator.lights_off;
+              option.experimental_info.arguments.light_period_minutes =
+                parseInt(incubator.light_period_minutes, 10) || 1440;
+              option.experimental_info.arguments.light_cycle_anchor =
+                incubator.light_cycle_anchor !== null &&
+                incubator.light_cycle_anchor !== undefined
+                  ? String(incubator.light_cycle_anchor)
+                  : "";
+            }
+          }
+        }
+
+        $http
+          .post("/device/" + device_id + "/controls/start_record", option)
+          .then(function (response) {
+            $scope.device.status = response.data.status;
+            $scope.device.countdown = response.data.autostop;
+            refreshDeviceStatus();
+          })
+          .catch(function (error) {
+            console.error("Failed to start recording:", error);
+            manageSpinner("stop");
+          });
+      };
+
+      /**
+       * Stop current tracking or recording
+       */
+      $scope.ethoscope.stop = function () {
+        console.log("Stopping tracking/recording");
+        $http
+          .post("/device/" + device_id + "/controls/stop", {})
+          .then(function (response) {
+            $scope.device.status = response.data.status;
+          })
+          .catch(function (error) {
+            console.error("Failed to stop:", error);
+          });
+      };
+
+      // ===========================
+      // DEVICE CONTROL FUNCTIONS
+      // ===========================
+
+      /**
+       * Update machine settings
+       */
+      $scope.ethoscope.update_machine = function (option) {
+        $("#changeInfo").modal("hide");
+        $http
+          .post("/device/" + device_id + "/machineinfo", option)
+          .then(function (response) {
+            $scope.machine_info = response.data;
+
+            // Immediately refresh device data to show updated time/settings
+            refreshDeviceStatus();
+
+            if (response.data.haschanged) {
+              $scope.ethoscope.alert(
+                "Some settings have changed. Please REBOOT your ethoscope now.",
+              );
+            }
+          })
+          .catch(function (error) {
+            console.error("Failed to update machine info:", error);
+          });
+      };
+
+      /**
+       * Power off the ethoscope device
+       */
+      $scope.ethoscope.poweroff = function () {
+        $http
+          .post("/device/" + device_id + "/controls/poweroff", {})
+          .then(function (response) {
+            $scope.device = response.data;
+            window.close();
+          })
+          .catch(function (error) {
+            console.error("Failed to power off:", error);
+          });
+      };
+
+      /**
+       * Reboot the ethoscope device
+       */
+      $scope.ethoscope.reboot = function () {
+        console.log("Rebooting ethoscope");
+        $http
+          .post("/device/" + device_id + "/controls/reboot", {})
+          .then(function (response) {
+            $scope.device = response.data;
+            window.close();
+          })
+          .catch(function (error) {
+            console.error("Failed to reboot:", error);
+          });
+      };
+
+      /**
+       * Restart ethoscope software (without rebooting hardware)
+       */
+      $scope.ethoscope.restart = function () {
+        console.log("Restarting ethoscope software");
+        $http
+          .post("/device/" + device_id + "/controls/restart", {})
+          .then(function (response) {
+            $scope.device = response.data;
+          })
+          .catch(function (error) {
+            console.error("Failed to restart:", error);
+          });
+      };
+
+      // ===========================
+      // STREAMING & VIDEO FUNCTIONS
+      // ===========================
+
+      /**
+       * Start real-time video streaming
+       */
+      $scope.ethoscope.stream = function () {
+        if (!$scope.can_stream) {
+          console.warn("Streaming not available for this device");
+          return;
+        }
+
+        console.log("Starting real-time stream");
+        $http
+          .post("/device/" + device_id + "/controls/stream", {
+            recorder: {
+              name: "Streamer",
+              arguments: {},
+            },
+          })
+          .then(function (response) {
+            $scope.device.status = response.data.status;
+            window.location.reload();
+          })
+          .catch(function (error) {
+            console.error("Failed to start stream:", error);
+          });
+      };
+
+      /**
+       * Convert H264 video chunks to MP4 format
+       */
+      $scope.ethoscope.convertvideos = function () {
+        console.log("Converting H264 chunks to MP4");
+        $http
+          .post("/device/" + device_id + "/controls/convertvideos")
+          .then(function (response) {
+            $scope.device.status = response.data.status;
+            window.location.reload();
+          })
+          .catch(function (error) {
+            console.error("Failed to convert videos:", error);
+          });
+      };
+
+      // ===========================
+      // MAINTENANCE FUNCTIONS
+      // ===========================
+
+      // Backup configuration state
+      $scope.backupConfig = {
+        type: "none",
+        backupDatabases: true,
+        backupVideos: false,
+        loading: false,
+      };
+      $scope.backupInProgress = false;
+      $scope.backupComplete = false;
+      $scope.backupError = null;
+      $scope.backupProgress = { message: "", percent: 0 };
+
+      /**
+       * Initialize backup modal - detect backup type.
+       * Called when backup modal is opened.
+       */
+      $scope.ethoscope.backup = function () {
+        // Reset state
         $scope.backupInProgress = false;
         $scope.backupComplete = false;
         $scope.backupError = null;
-        $scope.backupProgress = { message: '', percent: 0 };
+        $scope.backupProgress = { message: "", percent: 0 };
+        $scope.backupConfig = {
+          type: "none",
+          backupDatabases: true,
+          backupVideos: false,
+          loading: true,
+        };
 
-        /**
-         * Initialize backup modal - detect backup type.
-         * Called when backup modal is opened.
-         */
-        $scope.ethoscope.backup = function() {
-            // Reset state
-            $scope.backupInProgress = false;
-            $scope.backupComplete = false;
-            $scope.backupError = null;
-            $scope.backupProgress = { message: '', percent: 0 };
+        // Fetch backup info to detect type
+        $http
+          .get("/device/" + device_id + "/backup")
+          .then(function (response) {
             $scope.backupConfig = {
-                type: 'none',
-                backupDatabases: true,
-                backupVideos: false,
-                loading: true
+              type: response.data.recommended_backup_type || "none",
+              backupDatabases: true,
+              backupVideos: false,
+              loading: false,
             };
+          })
+          .catch(function (error) {
+            console.error("Failed to get backup info:", error);
+            $scope.backupConfig = {
+              type: "none",
+              backupDatabases: true,
+              backupVideos: false,
+              loading: false,
+            };
+          });
+      };
 
-            // Fetch backup info to detect type
-            $http.get('/device/' + device_id + '/backup')
-                .then(function(response) {
-                    $scope.backupConfig = {
-                        type: response.data.recommended_backup_type || 'none',
-                        backupDatabases: true,
-                        backupVideos: false,
-                        loading: false
-                    };
-                })
-                .catch(function(error) {
-                    console.error('Failed to get backup info:', error);
-                    $scope.backupConfig = {
-                        type: 'none',
-                        backupDatabases: true,
-                        backupVideos: false,
-                        loading: false
-                    };
-                });
+      /**
+       * Execute backup with selected options.
+       * Called when Start Backup button is clicked.
+       */
+      $scope.ethoscope.startBackup = function () {
+        $scope.backupInProgress = true;
+        $scope.backupComplete = false;
+        $scope.backupError = null;
+        $scope.backupProgress = {
+          message: "Initiating backup...",
+          percent: 10,
         };
 
-        /**
-         * Execute backup with selected options.
-         * Called when Start Backup button is clicked.
-         */
-        $scope.ethoscope.startBackup = function() {
-            $scope.backupInProgress = true;
-            $scope.backupComplete = false;
-            $scope.backupError = null;
-            $scope.backupProgress = { message: 'Initiating backup...', percent: 10 };
-
-            $http.post('/device/' + device_id + '/backup', {
-                backup_databases: $scope.backupConfig.backupDatabases,
-                backup_videos: $scope.backupConfig.backupVideos
-            })
-            .then(function(response) {
-                if (response.data.success) {
-                    $scope.backupComplete = true;
-                    $scope.backupProgress.message = 'Backup completed!';
-                    $scope.backupProgress.percent = 100;
-                } else {
-                    $scope.backupError = response.data.error || 'Backup failed';
-                }
-                $scope.backupInProgress = false;
-            })
-            .catch(function(error) {
-                console.error('Backup error:', error);
-                $scope.backupError = 'Network error during backup';
-                $scope.backupInProgress = false;
-            });
-        };
-
-        /**
-         * Dump SQL database with progress tracking
-         */
-        $scope.ethoscope.SQLdump = function() {
-            function checkDumpStatus() {
-                $http.get('/device/' + device_id + '/dumpSQLdb')
-                    .then(function(response) {
-                        $scope.SQLdumpStatus = response.data.Status;
-                        $scope.SQLdumpStarted = response.data.Started;
-                    })
-                    .catch(function(error) {
-                        console.error('Failed to check SQL dump status:', error);
-                    });
+        $http
+          .post("/device/" + device_id + "/backup", {
+            backup_databases: $scope.backupConfig.backupDatabases,
+            backup_videos: $scope.backupConfig.backupVideos,
+          })
+          .then(function (response) {
+            if (response.data.success) {
+              $scope.backupComplete = true;
+              $scope.backupProgress.message = "Backup completed!";
+              $scope.backupProgress.percent = 100;
+            } else {
+              $scope.backupError = response.data.error || "Backup failed";
             }
+            $scope.backupInProgress = false;
+          })
+          .catch(function (error) {
+            console.error("Backup error:", error);
+            $scope.backupError = "Network error during backup";
+            $scope.backupInProgress = false;
+          });
+      };
 
-            // Poll dump status every 2 seconds until finished
-            var timer = setInterval(function() {
-                if ($scope.SQLdumpStatus !== 'Finished') {
-                    checkDumpStatus();
-                } else {
-                    clearInterval(timer);
-                }
-            }, 2000);
-        };
+      /**
+       * Dump SQL database with progress tracking
+       */
+      $scope.ethoscope.SQLdump = function () {
+        function checkDumpStatus() {
+          $http
+            .get("/device/" + device_id + "/dumpSQLdb")
+            .then(function (response) {
+              $scope.SQLdumpStatus = response.data.Status;
+              $scope.SQLdumpStarted = response.data.Started;
+            })
+            .catch(function (error) {
+              console.error("Failed to check SQL dump status:", error);
+            });
+        }
 
-        /**
-         * Test connected hardware module
-         */
-        $scope.module_testing = false;
+        // Poll dump status every 2 seconds until finished
+        var timer = setInterval(function () {
+          if ($scope.SQLdumpStatus !== "Finished") {
+            checkDumpStatus();
+          } else {
+            clearInterval(timer);
+          }
+        }, 2000);
+      };
+
+      /**
+       * Test connected hardware module
+       */
+      $scope.module_testing = false;
+      $scope.module_test_result = null;
+
+      $scope.ethoscope.testModule = function () {
+        console.log("Testing attached hardware module");
+        $scope.module_testing = true;
         $scope.module_test_result = null;
 
-        $scope.ethoscope.testModule = function() {
-            console.log("Testing attached hardware module");
-            $scope.module_testing = true;
-            $scope.module_test_result = null;
+        $http
+          .post("/device/" + device_id + "/controls/test_module")
+          .then(function (response) {
+            $scope.module_testing = false;
+            $scope.module_test_result = "success";
+            $scope.device.status = response.data.status;
+          })
+          .catch(function (error) {
+            $scope.module_testing = false;
+            $scope.module_test_result = "failed";
+            console.error("Failed to test module:", error);
+          });
+      };
 
-            $http.post('/device/' + device_id + '/controls/test_module')
-                .then(function(response) {
-                    $scope.module_testing = false;
-                    $scope.module_test_result = 'success';
-                    $scope.device.status = response.data.status;
-                })
-                .catch(function(error) {
-                    $scope.module_testing = false;
-                    $scope.module_test_result = 'failed';
-                    console.error('Failed to test module:', error);
+      /**
+       * Update connected module firmware
+       */
+      $scope.ethoscope.updateFirmware = function () {
+        console.log("Updating module firmware");
+        $scope.firmware_updating = true;
+        $scope.firmware_update_result = null;
+
+        $http
+          .post("/device/" + device_id + "/firmware/update")
+          .then(function (response) {
+            $scope.firmware_updating = false;
+            $scope.firmware_update_result = response.data;
+
+            // Refresh firmware status after update
+            if (response.data.status === "updated") {
+              $http
+                .get("/device/" + device_id + "/firmware/status")
+                .then(function (fwResponse) {
+                  $scope.firmware_status = fwResponse.data;
                 });
-        };
-
-        /**
-         * Update connected module firmware
-         */
-        $scope.ethoscope.updateFirmware = function() {
-            console.log("Updating module firmware");
-            $scope.firmware_updating = true;
-            $scope.firmware_update_result = null;
-
-            $http.post('/device/' + device_id + '/firmware/update')
-                .then(function(response) {
-                    $scope.firmware_updating = false;
-                    $scope.firmware_update_result = response.data;
-
-                    // Refresh firmware status after update
-                    if (response.data.status === 'updated') {
-                        $http.get('/device/' + device_id + '/firmware/status')
-                            .then(function(fwResponse) {
-                                $scope.firmware_status = fwResponse.data;
-                            });
-                    }
-                })
-                .catch(function(error) {
-                    $scope.firmware_updating = false;
-                    $scope.firmware_update_result = {
-                        status: 'failed',
-                        error: 'Request failed: ' + (error.data || error.statusText || 'unknown error')
-                    };
-                    console.error('Failed to update firmware:', error);
-                });
-        };
-
-        /**
-         * Toggle device log display
-         */
-        $scope.ethoscope.log = function() {
-            // Always refresh machine info when accessing logs
-            $http.get('/device/' + device_id + '/machineinfo')
-                .then(function(response) {
-                    $scope.machine_info = response.data;
-                })
-                .catch(function(error) {
-                    console.error('Failed to load machine info:', error);
-                });
-
-            if (!$scope.showLog) {
-                // Show logs
-                var log_file_path = $scope.device.log_file;
-                $http.post('/device/' + device_id + '/log', {
-                        file_path: log_file_path
-                    })
-                    .then(function(response) {
-                        $scope.log = response.data;
-                        $scope.showLog = true;
-                    })
-                    .catch(function(error) {
-                        console.error('Failed to load logs:', error);
-                    });
-            } else {
-                // Hide logs
-                $scope.showLog = false;
             }
-        };
-
-        // ===========================
-        // TIMESTAMP DISPLAY FUNCTIONS
-        // ===========================
-
-        /**
-         * Update timestamp display immediately when device data is available
-         */
-        function updateTimestampDisplay(deviceData) {
-            // Initialize time display immediately - don't wait for node timestamp
-            // Compute drift against the BROWSER's clock, not the node's.
-            // The auto-correct below pushes the browser's epoch to the device,
-            // so the device can only ever converge to the browser's reference —
-            // measuring against /node/timestamp would leave a permanent residual
-            // whenever the node's hwclock/TZ is misconfigured (a common BST vs.
-            // UTC source of "all devices show out of sync" false positives).
-            // node_datetime is still shown for human reference but isn't used
-            // for the gate.
-            if (deviceData.current_timestamp) {
-                $scope.device_timestamp = new Date(deviceData.current_timestamp * 1000);
-                $scope.device_datetime = $scope.device_timestamp.toLocaleString();
-
-                var local_time = new Date();
-                $scope.node_datetime = local_time.toLocaleString();
-                $scope.delta_t_min = Math.abs((local_time.getTime() / 1000 - deviceData.current_timestamp) / 60);
-
-                // Auto-correct device clock if drift > 3 min (max 3 attempts per page load)
-                if ($scope.delta_t_min > 3 && $attempt < 3) {
-                    $scope.ethoscope.update_machine({
-                        machine_options: {
-                            arguments: {
-                                datetime: local_time.getTime() / 1000
-                            },
-                            name: 'datetime'
-                        }
-                    });
-                    $attempt++;
-                    console.log("Auto-correcting device time. Attempt:", $attempt);
-                }
-            } else {
-                $scope.node_datetime = "Node Time";
-                $scope.device_datetime = "Device Time";
-            }
-        }
-
-        // ===========================
-        // REAL-TIME UPDATE FUNCTIONS
-        // ===========================
-
-        /**
-         * Refresh device status after operations
-         */
-        function refreshDeviceStatus() {
-            $http.get('/devices')
-                .then(function() {
-                    return $http.get('/device/' + device_id + '/data');
-                })
-                .then(function(response) {
-                    // Preserve backup_info and backup_status_detailed during device refresh
-                    var existingBackupInfo = $scope.device ? $scope.device.backup_info : null;
-                    var existingBackupStatusDetailed = $scope.device ? $scope.device.backup_status_detailed : null;
-
-                    // Reset dismissed error if a new error appeared
-                    var prevError = $scope.device ? $scope.device.error : null;
-                    var newError = response.data.error;
-                    if (newError && newError !== prevError) {
-                        $scope.errorState.dismissed = false;
-                    }
-                    // Auto-clear dismissed flag when error clears
-                    if (!newError) {
-                        $scope.errorState.dismissed = false;
-                    }
-
-                    $scope.device = response.data;
-
-                    // Restore preserved backup info
-                    if (existingBackupInfo) {
-                        $scope.device.backup_info = existingBackupInfo;
-                    }
-
-                    // Restore preserved detailed backup status
-                    if (existingBackupStatusDetailed) {
-                        $scope.device.backup_status_detailed = existingBackupStatusDetailed;
-                    }
-
-                    // Update backup summary cache when device data changes
-                    updateBackupSummary();
-                })
-                .catch(function(error) {
-                    console.error('Failed to refresh device status:', error);
-                });
-        }
-
-        /**
-         * Main refresh function - updates device data and handles time synchronization
-         */
-        function refresh() {
-            // Only refresh when page is visible (performance optimization)
-            if (document.visibilityState !== "visible") return;
-
-            $http.get('/device/' + device_id + '/data')
-                .then(function(response) {
-                    var data = response.data;
-
-                    // Preserve backup_info, backup_status_detailed, and databases during device refresh
-                    var existingBackupInfo = $scope.device ? $scope.device.backup_info : null;
-                    var existingBackupStatusDetailed = $scope.device ? $scope.device.backup_status_detailed : null;
-                    var existingDatabases = $scope.device ? $scope.device.databases : null;
-
-                    $scope.device = data;
-
-                    // Restore preserved backup info
-                    if (existingBackupInfo) {
-                        $scope.device.backup_info = existingBackupInfo;
-                    }
-
-                    // Restore preserved detailed backup status
-                    if (existingBackupStatusDetailed) {
-                        $scope.device.backup_status_detailed = existingBackupStatusDetailed;
-                    }
-
-                    // Restore preserved databases info (if not present in fresh data)
-                    if (existingDatabases && (!data.databases || Object.keys(data.databases).length === 0)) {
-                        $scope.device.databases = existingDatabases;
-                    }
-
-                    console.log('DEBUG: Data received in refresh function:', data);
-
-                    // Update backup summary cache when device data changes
-                    updateBackupSummary();
-
-                    // Update node.database_list for frontend dropdown
-                    updateNodeDatabaseList();
-
-                    // Update timestamp display using the extracted function
-                    updateTimestampDisplay(data);
-
-                    // Update device URLs with reduced cache busting (every 30 seconds instead of every refresh)
-                    var timestamp = Math.floor(new Date().getTime() / 30000.0) * 30;
-                    $scope.device.url_img = "/device/" + $scope.device.id + "/last_img?" + timestamp;
-                    $scope.device.url_stream = '/device/' + device_id + '/stream';
-
-                    // TODO: Fix upload URL to point to local server
-                    $scope.device.url_upload = "http://" + $scope.device.ip + ":9000/upload/" + $scope.device.id;
-
-                    // Stop spinner when device is no longer initializing/stopping
-                    var status = $scope.device.status;
-                    if (spStart &&
-                        status !== 'initialising' &&
-                        status !== 'stopping') {
-                        manageSpinner('stop');
-                    }
-                })
-                .catch(function(error) {
-                    console.error('Failed to refresh device data:', error);
-                });
-
-            // Also refresh backup info periodically to keep visualization up to date
-            loadBackupInfo(); // Load backup info on every refresh (throttled to 10s anyway)
-        }
-
-        // ===========================
-        // INITIALIZATION
-        // ===========================
-
-        // Load all initial data - OPTIMIZED
-        loadNodeData();
-        loadDeviceData();
-        loadBackupInfo(true); // Load backup info (force on initial load)
-        loadDaemons();        // Determines which rsync service handles video backup
-
-        /**
-         * Formats raw database information into a simplified list of dictionaries.
-         */
-        function formatDatabasesInfo(databasesData) {
-            var databaseList = [];
-
-            // Process MariaDB (MySQL) databases
-            if (databasesData && databasesData.MariaDB) {
-                for (var dbName in databasesData.MariaDB) {
-                    if (databasesData.MariaDB.hasOwnProperty(dbName)) {
-                        var dbInfo = databasesData.MariaDB[dbName];
-                        databaseList.push({
-                            name: dbName,
-                            type: "MySQL",
-                            active: true,
-                            size: dbInfo.db_size_bytes || 0,
-                            status: dbInfo.db_status || "unknown"
-                        });
-                    }
-                }
-            }
-
-            // Process SQLite databases
-            if (databasesData && databasesData.SQLite) {
-                for (var dbName in databasesData.SQLite) {
-                    if (databasesData.SQLite.hasOwnProperty(dbName)) {
-                        var dbInfo = databasesData.SQLite[dbName];
-                        databaseList.push({
-                            name: dbName,
-                            type: "SQLite",
-                            active: true,
-                            size: dbInfo.filesize || 0,
-                            status: dbInfo.db_status || "unknown",
-                            path: dbInfo.path || ""
-                        });
-                    }
-                }
-            }
-
-            return {
-                "database_list": databaseList
+          })
+          .catch(function (error) {
+            $scope.firmware_updating = false;
+            $scope.firmware_update_result = {
+              status: "failed",
+              error:
+                "Request failed: " +
+                (error.data || error.statusText || "unknown error"),
             };
-        }
+            console.error("Failed to update firmware:", error);
+          });
+      };
 
-        /**
-         * Update node.database_list for frontend dropdown from device data
-         */
-        function updateNodeDatabaseList() {
-            // Populate node.database_list from device.databases for dropdown
-            console.log('DEBUG: $scope.device.databases before formatting:', $scope.device.databases);
-            if ($scope.device && $scope.device.databases) {
-                $scope.node.database_list = formatDatabasesInfo($scope.device.databases).database_list;
-                console.log('Updated node.database_list with', $scope.node.database_list.length, 'databases');
-            } else {
-                $scope.node.database_list = [];
-                console.log('No databases found on device, setting empty array');
+      /**
+       * Toggle device log display
+       */
+      $scope.ethoscope.log = function () {
+        // Always refresh machine info when accessing logs
+        $http
+          .get("/device/" + device_id + "/machineinfo")
+          .then(function (response) {
+            $scope.machine_info = response.data;
+          })
+          .catch(function (error) {
+            console.error("Failed to load machine info:", error);
+          });
+
+        if (!$scope.showLog) {
+          // Show logs
+          var log_file_path = $scope.device.log_file;
+          $http
+            .post("/device/" + device_id + "/log", {
+              file_path: log_file_path,
+            })
+            .then(function (response) {
+              $scope.log = response.data;
+              $scope.showLog = true;
+            })
+            .catch(function (error) {
+              console.error("Failed to load logs:", error);
+            });
+        } else {
+          // Hide logs
+          $scope.showLog = false;
+        }
+      };
+
+      // ===========================
+      // TIMESTAMP DISPLAY FUNCTIONS
+      // ===========================
+
+      /**
+       * Update timestamp display immediately when device data is available
+       */
+      function updateTimestampDisplay(deviceData) {
+        // Initialize time display immediately - don't wait for node timestamp
+        // Compute drift against the BROWSER's clock, not the node's.
+        // The auto-correct below pushes the browser's epoch to the device,
+        // so the device can only ever converge to the browser's reference —
+        // measuring against /node/timestamp would leave a permanent residual
+        // whenever the node's hwclock/TZ is misconfigured (a common BST vs.
+        // UTC source of "all devices show out of sync" false positives).
+        // node_datetime is still shown for human reference but isn't used
+        // for the gate.
+        if (deviceData.current_timestamp) {
+          $scope.device_timestamp = new Date(
+            deviceData.current_timestamp * 1000,
+          );
+          $scope.device_datetime = $scope.device_timestamp.toLocaleString();
+
+          var local_time = new Date();
+          $scope.node_datetime = local_time.toLocaleString();
+          $scope.delta_t_min = Math.abs(
+            (local_time.getTime() / 1000 - deviceData.current_timestamp) / 60,
+          );
+
+          // Auto-correct device clock if drift > 3 min (max 3 attempts per page load)
+          if ($scope.delta_t_min > 3 && $attempt < 3) {
+            $scope.ethoscope.update_machine({
+              machine_options: {
+                arguments: {
+                  datetime: local_time.getTime() / 1000,
+                },
+                name: "datetime",
+              },
+            });
+            $attempt++;
+            console.log("Auto-correcting device time. Attempt:", $attempt);
+          }
+        } else {
+          $scope.node_datetime = "Node Time";
+          $scope.device_datetime = "Device Time";
+        }
+      }
+
+      // ===========================
+      // REAL-TIME UPDATE FUNCTIONS
+      // ===========================
+
+      /**
+       * Refresh device status after operations
+       */
+      function refreshDeviceStatus() {
+        $http
+          .get("/devices")
+          .then(function () {
+            return $http.get("/device/" + device_id + "/data");
+          })
+          .then(function (response) {
+            // Preserve backup_info and backup_status_detailed during device refresh
+            var existingBackupInfo = $scope.device
+              ? $scope.device.backup_info
+              : null;
+            var existingBackupStatusDetailed = $scope.device
+              ? $scope.device.backup_status_detailed
+              : null;
+
+            // Reset dismissed error if a new error appeared
+            var prevError = $scope.device ? $scope.device.error : null;
+            var newError = response.data.error;
+            if (newError && newError !== prevError) {
+              $scope.errorState.dismissed = false;
             }
+            // Auto-clear dismissed flag when error clears
+            if (!newError) {
+              $scope.errorState.dismissed = false;
+            }
+
+            $scope.device = response.data;
+
+            // Restore preserved backup info
+            if (existingBackupInfo) {
+              $scope.device.backup_info = existingBackupInfo;
+            }
+
+            // Restore preserved detailed backup status
+            if (existingBackupStatusDetailed) {
+              $scope.device.backup_status_detailed =
+                existingBackupStatusDetailed;
+            }
+
+            // Update backup summary cache when device data changes
+            updateBackupSummary();
+          })
+          .catch(function (error) {
+            console.error("Failed to refresh device status:", error);
+          });
+      }
+
+      /**
+       * Main refresh function - updates device data and handles time synchronization
+       */
+      function refresh() {
+        // Only refresh when page is visible (performance optimization)
+        if (document.visibilityState !== "visible") return;
+
+        $http
+          .get("/device/" + device_id + "/data")
+          .then(function (response) {
+            var data = response.data;
+
+            // Preserve backup_info, backup_status_detailed, and databases during device refresh
+            var existingBackupInfo = $scope.device
+              ? $scope.device.backup_info
+              : null;
+            var existingBackupStatusDetailed = $scope.device
+              ? $scope.device.backup_status_detailed
+              : null;
+            var existingDatabases = $scope.device
+              ? $scope.device.databases
+              : null;
+
+            $scope.device = data;
+
+            // Restore preserved backup info
+            if (existingBackupInfo) {
+              $scope.device.backup_info = existingBackupInfo;
+            }
+
+            // Restore preserved detailed backup status
+            if (existingBackupStatusDetailed) {
+              $scope.device.backup_status_detailed =
+                existingBackupStatusDetailed;
+            }
+
+            // Restore preserved databases info (if not present in fresh data)
+            if (
+              existingDatabases &&
+              (!data.databases || Object.keys(data.databases).length === 0)
+            ) {
+              $scope.device.databases = existingDatabases;
+            }
+
+            console.log("DEBUG: Data received in refresh function:", data);
+
+            // Update backup summary cache when device data changes
+            updateBackupSummary();
+
+            // Update node.database_list for frontend dropdown
+            updateNodeDatabaseList();
+
+            // Update timestamp display using the extracted function
+            updateTimestampDisplay(data);
+
+            // Update device URLs with reduced cache busting (every 30 seconds instead of every refresh)
+            var timestamp = Math.floor(new Date().getTime() / 30000.0) * 30;
+            $scope.device.url_img =
+              "/device/" + $scope.device.id + "/last_img?" + timestamp;
+            $scope.device.url_stream = "/device/" + device_id + "/stream";
+
+            // TODO: Fix upload URL to point to local server
+            $scope.device.url_upload =
+              "http://" + $scope.device.ip + ":9000/upload/" + $scope.device.id;
+
+            // Stop spinner when device is no longer initializing/stopping
+            var status = $scope.device.status;
+            if (spStart && status !== "initialising" && status !== "stopping") {
+              manageSpinner("stop");
+            }
+          })
+          .catch(function (error) {
+            console.error("Failed to refresh device data:", error);
+          });
+
+        // Also refresh backup info periodically to keep visualization up to date
+        loadBackupInfo(); // Load backup info on every refresh (throttled to 10s anyway)
+      }
+
+      // ===========================
+      // INITIALIZATION
+      // ===========================
+
+      // Load all initial data - OPTIMIZED
+      loadNodeData();
+      loadDeviceData();
+      loadBackupInfo(true); // Load backup info (force on initial load)
+      loadDaemons(); // Determines which rsync service handles video backup
+
+      /**
+       * Formats raw database information into a simplified list of dictionaries.
+       */
+      function formatDatabasesInfo(databasesData) {
+        var databaseList = [];
+
+        // Process MariaDB (MySQL) databases
+        if (databasesData && databasesData.MariaDB) {
+          for (var dbName in databasesData.MariaDB) {
+            if (databasesData.MariaDB.hasOwnProperty(dbName)) {
+              var dbInfo = databasesData.MariaDB[dbName];
+              databaseList.push({
+                name: dbName,
+                type: "MySQL",
+                active: true,
+                size: dbInfo.db_size_bytes || 0,
+                status: dbInfo.db_status || "unknown",
+              });
+            }
+          }
         }
 
-        /**
-         * Check database availability for append functionality and provide user feedback
-         */
-        function checkDatabaseAvailability() {
-            // Initialize database status tracking
-            $scope.database_status = {
-                loading: false,
-                available: false,
-                error: null,
-                last_check: null
-            };
+        // Process SQLite databases
+        if (databasesData && databasesData.SQLite) {
+          for (var dbName in databasesData.SQLite) {
+            if (databasesData.SQLite.hasOwnProperty(dbName)) {
+              var dbInfo = databasesData.SQLite[dbName];
+              databaseList.push({
+                name: dbName,
+                type: "SQLite",
+                active: true,
+                size: dbInfo.filesize || 0,
+                status: dbInfo.db_status || "unknown",
+                path: dbInfo.path || "",
+              });
+            }
+          }
+        }
 
-            // Check if device has database_list in its data
-            if ($scope.device && $scope.device.database_list) {
-                $scope.database_status.available = $scope.device.database_list.length > 0;
-                $scope.database_status.last_check = new Date();
+        return {
+          database_list: databaseList,
+        };
+      }
 
-                if (!$scope.database_status.available) {
-                    $scope.database_status.error = "No previous experiments found for database appending";
+      /**
+       * Update node.database_list for frontend dropdown from device data
+       */
+      function updateNodeDatabaseList() {
+        // Populate node.database_list from device.databases for dropdown
+        console.log(
+          "DEBUG: $scope.device.databases before formatting:",
+          $scope.device.databases,
+        );
+        if ($scope.device && $scope.device.databases) {
+          $scope.node.database_list = formatDatabasesInfo(
+            $scope.device.databases,
+          ).database_list;
+          console.log(
+            "Updated node.database_list with",
+            $scope.node.database_list.length,
+            "databases",
+          );
+        } else {
+          $scope.node.database_list = [];
+          console.log("No databases found on device, setting empty array");
+        }
+      }
+
+      /**
+       * Check database availability for append functionality and provide user feedback
+       */
+      function checkDatabaseAvailability() {
+        // Initialize database status tracking
+        $scope.database_status = {
+          loading: false,
+          available: false,
+          error: null,
+          last_check: null,
+        };
+
+        // Check if device has database_list in its data
+        if ($scope.device && $scope.device.database_list) {
+          $scope.database_status.available =
+            $scope.device.database_list.length > 0;
+          $scope.database_status.last_check = new Date();
+
+          if (!$scope.database_status.available) {
+            $scope.database_status.error =
+              "No previous experiments found for database appending";
+          }
+        } else {
+          // Database list not yet loaded, mark as loading
+          $scope.database_status.loading = true;
+          $scope.database_status.error =
+            "Database information is still loading...";
+        }
+      }
+
+      /**
+       * Refresh database availability status
+       */
+      $scope.refreshDatabaseStatus = function () {
+        $scope.database_status.loading = true;
+        $scope.database_status.error = null;
+
+        // Reload device data to get fresh database list
+        $http
+          .get("/device/" + device_id + "/data")
+          .then(function (response) {
+            $scope.device = response.data;
+            // Update backup summary cache when device data changes
+            updateBackupSummary();
+            updateNodeDatabaseList();
+            checkDatabaseAvailability();
+          })
+          .catch(function (error) {
+            $scope.database_status.loading = false;
+            $scope.database_status.error =
+              "Failed to refresh database information: " + error.data;
+            console.error("Failed to refresh database status:", error);
+          });
+      };
+
+      /**
+       * Get user-friendly message for database availability status
+       */
+      $scope.getDatabaseStatusMessage = function () {
+        if ($scope.database_status.loading) {
+          return "Loading database information...";
+        } else if ($scope.database_status.available) {
+          return "Databases available for appending";
+        } else if ($scope.database_status.error) {
+          return $scope.database_status.error;
+        } else {
+          return "Database status unknown";
+        }
+      };
+
+      // Start periodic refresh (every 10 seconds - reduced from 6 seconds)
+      // Only refresh when page is visible to reduce unnecessary load
+      refresh_data = $interval(refresh, 10000);
+
+      // Cleanup interval when controller is destroyed
+      $scope.$on("$destroy", function () {
+        if (refresh_data) {
+          $interval.cancel(refresh_data);
+        }
+      });
+
+      // ===========================
+      // VIDEO BACKUP FUNCTIONS
+      // ===========================
+
+      /**
+       * Load enhanced video information from rsync status
+       */
+      function loadEnhancedVideoInfo() {
+        $http
+          .get("http://localhost:8093/status", { timeout: 3000 })
+          .then(function (response) {
+            var rsyncData = response.data;
+            var deviceData = rsyncData.devices && rsyncData.devices[device_id];
+
+            if (
+              deviceData &&
+              deviceData.transfer_details &&
+              deviceData.transfer_details.videos
+            ) {
+              var videoFiles = deviceData.transfer_details.videos.files || {};
+              var videoFileArray = [];
+
+              for (var filename in videoFiles) {
+                if (videoFiles.hasOwnProperty(filename)) {
+                  var fileInfo = videoFiles[filename];
+                  videoFileArray.push({
+                    name: filename,
+                    size_bytes: fileInfo.size_bytes || 0,
+                    size_human:
+                      fileInfo.size_human ||
+                      $scope.formatFileSize(fileInfo.size_bytes || 0),
+                    status: fileInfo.status || "unknown",
+                    path: fileInfo.path || "",
+                    is_h264:
+                      filename.indexOf(".h264", filename.length - 5) !== -1,
+                  });
                 }
-            } else {
-                // Database list not yet loaded, mark as loading
-                $scope.database_status.loading = true;
-                $scope.database_status.error = "Database information is still loading...";
+              }
+
+              $scope.device.backup_status_detailed.individual_files.videos = {
+                files: videoFileArray,
+              };
+
+              console.log(
+                "DEBUG: Loaded video transfer details:",
+                videoFileArray.length,
+                "files",
+              );
             }
+          })
+          .catch(function (error) {
+            console.log("Enhanced video info not available:", error);
+          });
+      }
+
+      /**
+       * Filter function to show only h264 files
+       */
+      $scope.filterH264Files = function (videoFile) {
+        return (
+          videoFile.is_h264 ||
+          videoFile.name.indexOf(".h264", videoFile.name.length - 5) !== -1
+        );
+      };
+
+      /**
+       * Get video backup tooltip
+       */
+      $scope.getVideoBackupTooltip = function () {
+        if (
+          $scope.device.backup_status_detailed &&
+          $scope.device.backup_status_detailed.individual_files &&
+          $scope.device.backup_status_detailed.individual_files.videos
+        ) {
+          var videos =
+            $scope.device.backup_status_detailed.individual_files.videos.files;
+          var h264Files = videos.filter($scope.filterH264Files);
+          return h264Files.length + " h264 video files";
         }
+        return "Video backup status";
+      };
 
-        /**
-         * Refresh database availability status
-         */
-        $scope.refreshDatabaseStatus = function() {
-            $scope.database_status.loading = true;
-            $scope.database_status.error = null;
+      /**
+       * Get video segment style for proportional width
+       */
+      $scope.getVideoSegmentStyle = function (currentFile, allVideoFiles) {
+        var h264Files = allVideoFiles.filter($scope.filterH264Files);
+        var segmentWidth = h264Files.length > 0 ? 100 / h264Files.length : 100;
 
-            // Reload device data to get fresh database list
-            $http.get('/device/' + device_id + '/data')
-                .then(function(response) {
-                    $scope.device = response.data;
-                    // Update backup summary cache when device data changes
-                    updateBackupSummary();
-                    updateNodeDatabaseList();
-                    checkDatabaseAvailability();
-                })
-                .catch(function(error) {
-                    $scope.database_status.loading = false;
-                    $scope.database_status.error = "Failed to refresh database information: " + error.data;
-                    console.error('Failed to refresh database status:', error);
-                });
+        return {
+          width: segmentWidth + "%",
+          "min-width": "2px",
         };
+      };
 
-        /**
-         * Get user-friendly message for database availability status
-         */
-        $scope.getDatabaseStatusMessage = function() {
-            if ($scope.database_status.loading) {
-                return "Loading database information...";
-            } else if ($scope.database_status.available) {
-                return "Databases available for appending";
-            } else if ($scope.database_status.error) {
-                return $scope.database_status.error;
-            } else {
-                return "Database status unknown";
-            }
-        };
-
-        // Start periodic refresh (every 10 seconds - reduced from 6 seconds)
-        // Only refresh when page is visible to reduce unnecessary load
-        refresh_data = $interval(refresh, 10000);
-
-        // Cleanup interval when controller is destroyed
-        $scope.$on("$destroy", function() {
-            if (refresh_data) {
-                $interval.cancel(refresh_data);
-            }
+      // Add click handler for radio button labels after DOM is ready
+      setTimeout(function () {
+        // Make strong labels clickable to trigger radio buttons
+        $(document).on("click", ".modal .option-list li strong", function (e) {
+          e.preventDefault();
+          var $radioButton = $(this).siblings('input[type="radio"]');
+          if ($radioButton.length) {
+            $radioButton.click();
+          }
         });
 
-        // ===========================
-        // VIDEO BACKUP FUNCTIONS
-        // ===========================
+        // Apply default template when tracking modal is shown
+        $("#startModal").on("show.bs.modal", function () {
+          setTimeout(function () {
+            $scope.applyDefaultTemplate();
+          }, 200);
+        });
+      }, 100);
 
-        /**
-         * Load enhanced video information from rsync status
-         */
-        function loadEnhancedVideoInfo() {
-            $http.get('http://localhost:8093/status', { timeout: 3000 })
-                .then(function(response) {
-                    var rsyncData = response.data;
-                    var deviceData = rsyncData.devices && rsyncData.devices[device_id];
+      // ===========================
+      // STIMULATOR STATUS FUNCTIONS
+      // ===========================
 
-                    if (deviceData && deviceData.transfer_details && deviceData.transfer_details.videos) {
-                        var videoFiles = deviceData.transfer_details.videos.files || {};
-                        var videoFileArray = [];
+      /**
+       * Get a human-readable stimulator name from the class name
+       */
+      $scope.getReadableStimulatorName = function (className) {
+        if (!className) return "None";
 
-                        for (var filename in videoFiles) {
-                            if (videoFiles.hasOwnProperty(filename)) {
-                                var fileInfo = videoFiles[filename];
-                                videoFileArray.push({
-                                    name: filename,
-                                    size_bytes: fileInfo.size_bytes || 0,
-                                    size_human: fileInfo.size_human || $scope.formatFileSize(fileInfo.size_bytes || 0),
-                                    status: fileInfo.status || 'unknown',
-                                    path: fileInfo.path || '',
-                                    is_h264: filename.indexOf('.h264', filename.length - 5) !== -1
-                                });
-                            }
-                        }
-
-                        $scope.device.backup_status_detailed.individual_files.videos = {
-                            files: videoFileArray
-                        };
-
-                        console.log('DEBUG: Loaded video transfer details:', videoFileArray.length, 'files');
-                    }
-                })
-                .catch(function(error) {
-                    console.log('Enhanced video info not available:', error);
-                });
+        // Extract class name from full path format
+        var match = className.match(/class '([^']+)'/);
+        if (match) {
+          className = match[1];
         }
 
-        /**
-         * Filter function to show only h264 files
-         */
-        $scope.filterH264Files = function(videoFile) {
-            return videoFile.is_h264 || videoFile.name.indexOf('.h264', videoFile.name.length - 5) !== -1;
+        // Extract just the class name without module path
+        var parts = className.split(".");
+        var shortName = parts[parts.length - 1];
+
+        // Convert common stimulator names to readable format
+        var nameMapping = {
+          DefaultStimulator: "Default (No Stimulation)",
+          MultiStimulator: "Multi-Stimulator Sequence",
+          mAGO: "mAGO Sleep Depriver",
+          AGO: "AGO Sleep Depriver",
+          SleepDepStimulator: "Sleep Deprivation",
+          OptomotorSleepDepriver: "Optomotor Sleep Depriver",
+          MiddleCrossingStimulator: "Middle Crossing Stimulator",
+          ExperimentalSleepDepStimulator: "Experimental Sleep Depriver",
+          DynamicOdourSleepDepriver: "Dynamic Odour Sleep Depriver",
+          OptoMidlineCrossStimulator: "Optomotor Midline Cross",
+          OptomotorSleepDepriverSystematic:
+            "Systematic Optomotor Sleep Depriver",
+          MiddleCrossingOdourStimulator: "Middle Crossing Odour Stimulator",
+          MiddleCrossingOdourStimulatorFlushed: "Flushed Odour Stimulator",
         };
 
-        /**
-         * Get video backup tooltip
-         */
-        $scope.getVideoBackupTooltip = function() {
-            if ($scope.device.backup_status_detailed &&
-                $scope.device.backup_status_detailed.individual_files &&
-                $scope.device.backup_status_detailed.individual_files.videos) {
-                var videos = $scope.device.backup_status_detailed.individual_files.videos.files;
-                var h264Files = videos.filter($scope.filterH264Files);
-                return h264Files.length + ' h264 video files';
+        return nameMapping[shortName] || shortName;
+      };
+
+      /**
+       * Format date range string for display
+       */
+      $scope.formatDateRange = function (dateRange) {
+        if (!dateRange || dateRange.trim() === "") {
+          return "Always Active";
+        }
+
+        try {
+          // Parse the date range format "YYYY-MM-DD HH:mm:ss > YYYY-MM-DD HH:mm:ss"
+          var parts = dateRange.split(">");
+          if (parts.length === 2) {
+            var startStr = parts[0].trim();
+            var endStr = parts[1].trim();
+
+            if (startStr && endStr) {
+              // Format dates to be more readable
+              var startDate = new Date(startStr.replace(/ /, "T"));
+              var endDate = new Date(endStr.replace(/ /, "T"));
+
+              var formatDate = function (date) {
+                return (
+                  date.toLocaleDateString() +
+                  " " +
+                  date.toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                );
+              };
+
+              return formatDate(startDate) + " → " + formatDate(endDate);
             }
-            return 'Video backup status';
-        };
+          }
 
-        /**
-         * Get video segment style for proportional width
-         */
-        $scope.getVideoSegmentStyle = function(currentFile, allVideoFiles) {
-            var h264Files = allVideoFiles.filter($scope.filterH264Files);
-            var segmentWidth = h264Files.length > 0 ? (100 / h264Files.length) : 100;
+          return dateRange;
+        } catch (e) {
+          return dateRange;
+        }
+      };
 
-            return {
-                'width': segmentWidth + '%',
-                'min-width': '2px'
-            };
-        };
+      /**
+       * Check if stimulator is currently scheduled to be active
+       */
+      $scope.isStimulatorScheduled = function () {
+        if (
+          !$scope.device ||
+          !$scope.device.experimental_info ||
+          !$scope.device.experimental_info.current ||
+          !$scope.device.experimental_info.current.interactor
+        ) {
+          return false;
+        }
 
-        // Add click handler for radio button labels after DOM is ready
-        setTimeout(function() {
-            // Make strong labels clickable to trigger radio buttons
-            $(document).on('click', '.modal .option-list li strong', function(e) {
-                e.preventDefault();
-                var $radioButton = $(this).siblings('input[type="radio"]');
-                if ($radioButton.length) {
-                    $radioButton.click();
-                }
-            });
+        var dateRange =
+          $scope.device.experimental_info.current.interactor.arguments
+            .date_range;
+        if (!dateRange || dateRange.trim() === "") {
+          return true; // Always active if no date range specified
+        }
 
-            // Apply default template when tracking modal is shown
-            $('#startModal').on('show.bs.modal', function() {
-                setTimeout(function() {
-                    $scope.applyDefaultTemplate();
-                }, 200);
-            });
-        }, 100);
+        try {
+          var parts = dateRange.split(">");
+          if (parts.length === 2) {
+            var startStr = parts[0].trim();
+            var endStr = parts[1].trim();
 
-        // ===========================
-        // STIMULATOR STATUS FUNCTIONS
-        // ===========================
+            if (startStr && endStr) {
+              var startDate = new Date(startStr.replace(/ /, "T"));
+              var endDate = new Date(endStr.replace(/ /, "T"));
+              var now = new Date();
 
-        /**
-         * Get a human-readable stimulator name from the class name
-         */
-        $scope.getReadableStimulatorName = function(className) {
-            if (!className) return 'None';
-
-            // Extract class name from full path format
-            var match = className.match(/class '([^']+)'/);
-            if (match) {
-                className = match[1];
+              return now >= startDate && now <= endDate;
             }
+          }
+        } catch (e) {
+          console.error("Error parsing date range:", e);
+        }
 
-            // Extract just the class name without module path
-            var parts = className.split('.');
-            var shortName = parts[parts.length - 1];
+        return false;
+      };
 
-            // Convert common stimulator names to readable format
-            var nameMapping = {
-                'DefaultStimulator': 'Default (No Stimulation)',
-                'MultiStimulator': 'Multi-Stimulator Sequence',
-                'mAGO': 'mAGO Sleep Depriver',
-                'AGO': 'AGO Sleep Depriver',
-                'SleepDepStimulator': 'Sleep Deprivation',
-                'OptomotorSleepDepriver': 'Optomotor Sleep Depriver',
-                'MiddleCrossingStimulator': 'Middle Crossing Stimulator',
-                'ExperimentalSleepDepStimulator': 'Experimental Sleep Depriver',
-                'DynamicOdourSleepDepriver': 'Dynamic Odour Sleep Depriver',
-                'OptoMidlineCrossStimulator': 'Optomotor Midline Cross',
-                'OptomotorSleepDepriverSystematic': 'Systematic Optomotor Sleep Depriver',
-                'MiddleCrossingOdourStimulator': 'Middle Crossing Odour Stimulator',
-                'MiddleCrossingOdourStimulatorFlushed': 'Flushed Odour Stimulator'
-            };
+      /**
+       * Get device time as a formatted string
+       */
+      $scope.getDeviceTimeString = function () {
+        if ($scope.device_datetime) {
+          return $scope.device_datetime;
+        }
+        return new Date().toLocaleString();
+      };
 
-            return nameMapping[shortName] || shortName;
-        };
+      /**
+       * Format configuration values for display
+       */
+      $scope.formatConfigValue = function (value) {
+        if (value === null || value === undefined) {
+          return "null";
+        }
 
-        /**
-         * Format date range string for display
-         */
-        $scope.formatDateRange = function(dateRange) {
-            if (!dateRange || dateRange.trim() === '') {
-                return 'Always Active';
-            }
+        if (typeof value === "object") {
+          try {
+            return JSON.stringify(value, null, 2);
+          } catch (e) {
+            return "[Object]";
+          }
+        }
 
-            try {
-                // Parse the date range format "YYYY-MM-DD HH:mm:ss > YYYY-MM-DD HH:mm:ss"
-                var parts = dateRange.split('>');
-                if (parts.length === 2) {
-                    var startStr = parts[0].trim();
-                    var endStr = parts[1].trim();
+        if (typeof value === "string" && value.length > 100) {
+          return value.substring(0, 100) + "...";
+        }
 
-                    if (startStr && endStr) {
-                        // Format dates to be more readable
-                        var startDate = new Date(startStr.replace(/ /, 'T'));
-                        var endDate = new Date(endStr.replace(/ /, 'T'));
-
-                        var formatDate = function(date) {
-                            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                        };
-
-                        return formatDate(startDate) + ' → ' + formatDate(endDate);
-                    }
-                }
-
-                return dateRange;
-            } catch (e) {
-                return dateRange;
-            }
-        };
-
-        /**
-         * Check if stimulator is currently scheduled to be active
-         */
-        $scope.isStimulatorScheduled = function() {
-            if (!$scope.device || !$scope.device.experimental_info ||
-                !$scope.device.experimental_info.current ||
-                !$scope.device.experimental_info.current.interactor) {
-                return false;
-            }
-
-            var dateRange = $scope.device.experimental_info.current.interactor.arguments.date_range;
-            if (!dateRange || dateRange.trim() === '') {
-                return true; // Always active if no date range specified
-            }
-
-            try {
-                var parts = dateRange.split('>');
-                if (parts.length === 2) {
-                    var startStr = parts[0].trim();
-                    var endStr = parts[1].trim();
-
-                    if (startStr && endStr) {
-                        var startDate = new Date(startStr.replace(/ /, 'T'));
-                        var endDate = new Date(endStr.replace(/ /, 'T'));
-                        var now = new Date();
-
-                        return now >= startDate && now <= endDate;
-                    }
-                }
-            } catch (e) {
-                console.error('Error parsing date range:', e);
-            }
-
-            return false;
-        };
-
-        /**
-         * Get device time as a formatted string
-         */
-        $scope.getDeviceTimeString = function() {
-            if ($scope.device_datetime) {
-                return $scope.device_datetime;
-            }
-            return new Date().toLocaleString();
-        };
-
-        /**
-         * Format configuration values for display
-         */
-        $scope.formatConfigValue = function(value) {
-            if (value === null || value === undefined) {
-                return 'null';
-            }
-
-            if (typeof value === 'object') {
-                try {
-                    return JSON.stringify(value, null, 2);
-                } catch (e) {
-                    return '[Object]';
-                }
-            }
-
-            if (typeof value === 'string' && value.length > 100) {
-                return value.substring(0, 100) + '...';
-            }
-
-            return String(value);
-        };
-
-    });
-
+        return String(value);
+      };
+    },
+  );
 })();
