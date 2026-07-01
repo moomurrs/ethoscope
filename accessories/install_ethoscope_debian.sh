@@ -468,7 +468,6 @@ EOF
 step_enable_system_services() {
     print_info "Enabling ethoscope services..."
     systemctl enable ethoscope_device.service ethoscope_listener.service \
-        ethoscope_update.service ethoscope_GPIO_listener.service \
         ethoscope_light.service
 
     # Chrony service
