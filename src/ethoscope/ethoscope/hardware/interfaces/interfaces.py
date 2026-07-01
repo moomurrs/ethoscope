@@ -1,9 +1,9 @@
 __author__ = "quentin"
 
-import collections
 import json
 import logging
 import os
+import queue
 import time
 import urllib.error
 import urllib.parse
@@ -132,42 +132,59 @@ class HardwareConnection(Thread):
         self._interface_kwargs = kwargs
 
         self._interface = interface_class(*args, **kwargs)
-        self._instructions = collections.deque()
+        self._instructions = queue.Queue()
         self._connection_open = True
         super().__init__()
         self.start()
 
     def run(self):
         """
-        Infinite loop that send instructions to the hardware interface
+        Blocking loop that sends instructions to the hardware interface as they arrive.
+        Uses a thread-safe queue with blocking get for zero CPU usage when idle
+        and near-zero latency when active.
+        Items may be single instruction dicts or batches (lists) of instructions sent atomically.
         Do not call directly, used the ``start()`` method instead.
         """
         while self._connection_open:
-            time.sleep(0.1)
-            while len(self._instructions) > 0 and self._connection_open:
-                instruc = self._instructions.popleft()
-                try:
+            instruc = self._instructions.get()
+            if instruc is None:  # Sentinel signals shutdown
+                self._instructions.task_done()
+                logging.error("Hardware thread shut down!")
+                break
+            try:
+                if isinstance(instruc, list):
+                    # Batch: send all instructions together atomically
+                    for instruction in instruc:
+                        self._interface.send(**instruction)
+                else:
                     self._interface.send(**instruc)
-                except Exception:
-                    logging.error(
-                        f"Could not send the following instruction to the module. Instruction: {instruc}"
-                    )
+            except Exception:
+                logging.error("Could not send instruction to hardware module")
+            finally:
+                self._instructions.task_done()
 
     def send_instruction(self, instruction=None):
         """
         Stage an instruction to be sent to the hardware interface.
         Instructions will be parsed sequentially, but asynchronously from the main thread execution.
-        :param instruction: a dictionary of keyword arguments ,matching those of ``interface_class.send()``.
-        :type instruction: dict()
+        Accepts a single instruction dict or a list of instruction dicts for atomic batch delivery.
+        :param instruction: a dictionary of keyword arguments matching those of ``interface_class.send()``,
+            or a list of such dictionaries for batched (e.g. yoked) delivery.
+        :type instruction: dict() | list[dict()]
         """
         if instruction is None:
             instruction = {}
-        if not isinstance(instruction, dict):
+        if isinstance(instruction, list):
+            if not all(isinstance(item, dict) for item in instruction):
+                raise Exception("batch instructions should be a list of dictionaries")
+        elif not isinstance(instruction, dict):
             raise Exception("instructions should be dictionaries")
-        self._instructions.append(instruction)
+        self._instructions.put(instruction)
 
     def stop(self, error=None):
         self._connection_open = False
+        self._instructions.put(None)  # Sentinel: wakes (poisins) the blocking get()
+        logging.error("Hardware thread shutting down...")
 
     def __del__(self):
         self.stop()
@@ -444,7 +461,6 @@ def getModuleCapabilities(test=False, shallow=False, command=""):
         return found
 
     if found or "noUSB" in found:
-
         try:
             device = SimpleSerialInterface()
             dev_info = device.interrogate(test=test, command=command)

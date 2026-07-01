@@ -347,7 +347,7 @@ class ComposedStimulator(BaseStimulator):
 
         channel = self._roi_to_channel.get(roi_id)
         if channel is None:
-            logging.warning(f"ComposedStimulator: ROI {roi_id} has no channel!")
+            # logging.warning(f"ComposedStimulator: ROI {roi_id} has no channel!")
             return HasInteractedVariable(0), {}
 
         # Yoking mode: yoked ROIs never self-trigger
@@ -358,9 +358,7 @@ class ComposedStimulator(BaseStimulator):
 
         if interaction_code == 1:
             instruction = self._action.build_instruction(channel)
-            logging.info(
-                f"ComposedStimulator: stimulus on channel {channel} (ROI {roi_id})"
-            )
+            # logging.info(f"ComposedStimulator: stimulus on channel {channel} (ROI {roi_id})")
 
             # Yoking mode: focal ROI also stimulates its paired yoked channel
             if self._enable_yoking and roi_id in self._YOKING_PAIRS:
@@ -377,15 +375,21 @@ class ComposedStimulator(BaseStimulator):
 
             return HasInteractedVariable(1), instruction
         elif interaction_code == 2:
-            logging.info(f"ComposedStimulator: ghost stimulus (ROI {roi_id})")
+            # logging.info(f"ComposedStimulator: ghost stimulus (ROI {roi_id})")
             return HasInteractedVariable(2), {}
 
         return HasInteractedVariable(0), {}
 
     def _deliver(self, **kwargs):
-        """Deliver instruction(s) to hardware. Handles yoked partner channel."""
+        """Deliver instruction(s) to hardware. Batches yoked commands into a pair."""
         yoked_channel = kwargs.pop("_yoked_partner_channel", None)
-        super()._deliver(**kwargs)
+
         if yoked_channel is not None:
+            # Build both instructions and batch them as a pair for atomic delivery
+            main_instruction = {**kwargs}
             yoked_instruction = self._action.build_instruction(yoked_channel)
-            self._hardware_connection.send_instruction(yoked_instruction)
+            self._hardware_connection.send_instruction(
+                [main_instruction, yoked_instruction]
+            )
+        else:
+            super()._deliver(**kwargs)
