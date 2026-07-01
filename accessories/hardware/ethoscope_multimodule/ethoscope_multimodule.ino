@@ -278,6 +278,7 @@ void emergencyShutdown();    // Emergency shutdown procedure
 static char cmdBuffer[CMD_BUFFER_SIZE];
 static uint8_t cmdBufferIdx = 0;
 static char *cmdTokenPtr = NULL;
+// #define DEBUG_SERIAL 1
 
 // Returns next space-delimited token from the current command line
 char* cmdNext() {
@@ -371,7 +372,7 @@ void loop() {
     #if LED_COUNT > 0
         updateAllLeds();     // Handle "Activate All LEDs" deactivation
     #endif
-    delay(50);               // Short delay to prevent overwhelming the loop
+    // delay(50);               // Short delay to prevent overwhelming the loop
 }
 
 // =============================================================================
@@ -687,11 +688,13 @@ void activate(uint8_t channel, unsigned long duration) {
     activeChannels[channel].physicalPin = pins[channel];
     activeChannels[channel].endTime = millis() + duration;
 
+    #ifdef DEBUG_SERIAL
     Serial.print(F("Ch"));
     Serial.print(channel);
     Serial.print(F(" ON "));
     Serial.print(duration);
     Serial.println(F("ms."));
+    #endif
 }
 
 // Updates channels to deactivate them when their time has elapsed
@@ -702,9 +705,12 @@ void updateChannels() {
         if (activeChannels[i].endTime > 0 && currentTime >= activeChannels[i].endTime) {
             digitalWrite(activeChannels[i].physicalPin, LOW);
             activeChannels[i].endTime = 0;
+
+            #ifdef DEBUG_SERIAL
             Serial.print(F("Ch"));
             Serial.print(i);
             Serial.println(F(" OFF."));
+            #endif
         }
     }
 }
