@@ -1221,13 +1221,12 @@
             }
           }
         } else {
-          // If no stimulators in sequence, use DefaultStimulator
-          if (!option.interactor || !option.interactor.name) {
-            option.interactor = {
-              name: "DefaultStimulator",
-              arguments: {},
-            };
-          }
+          // If no stimulators in sequence, ALWAYS use DefaultStimulator
+          // regardless of what was initialized from the server options
+          option.interactor = {
+            name: "DefaultStimulator",
+            arguments: {},
+          };
         }
 
         // Check if we need to handle custom template transfer for FileBasedROIBuilder
