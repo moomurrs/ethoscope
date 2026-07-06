@@ -78,6 +78,7 @@
       // Date range picker configuration for stimulator scheduling
       // Initialize with safe defaults, will be updated when moment.js is available
       $scope.dateRangeOptions = {
+        parentEl: "#startModal", // Append picker inside modal to avoid Firefox enforceFocus issue
         timePicker: true,
         timePicker24Hour: true,
         timePickerIncrement: 30,
