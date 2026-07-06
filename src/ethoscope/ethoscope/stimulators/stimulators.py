@@ -196,3 +196,6 @@ class DefaultStimulator(BaseStimulator):
     def _decide(self):
         out = HasInteractedVariable(False)
         return out, {}
+    
+    def get_stimulator_state(self, t=None):
+        return "inactive"
