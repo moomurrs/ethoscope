@@ -102,7 +102,13 @@
                 <span ng-if="device.CPU_temp > 70" class="fas fa-temperature-high"></span>
                 <span ng-if="device.CPU_temp <= 70" class="fas fa-temperature-low"></span> CPU temperature: {{device.CPU_temp}} &#8451
             </p>
-            <p>Your file will be saved as: <a ng-if="device.backup_path" href="/download{{device.backup_path}}" target="_blank" title="{{device.backup_path}}">{{ethoscope.readable_url(device.backup_path)}}</a><span ng-if="!device.backup_path">Path not available</span></p>
+              <p>Your file will be saved on ethoscope as:
+                <strong ng-if="device.latest_cache.backup_filename"
+                        title="Full path: {{device.database_info.sqlite_source_path}}"
+                        style="border-bottom: 1px dotted gray; cursor: help;">
+                    {{device.latest_cache.backup_filename}}
+                </strong>
+              </p>
         </div>
     </div>
 
