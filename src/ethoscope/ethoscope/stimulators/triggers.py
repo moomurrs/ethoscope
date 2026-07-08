@@ -100,7 +100,7 @@ class InactivityTrigger(BaseTrigger):
 
         if not has_moved:
             if float(now - self._t0) > self._inactivity_time_threshold_ms:
-                if random.uniform(0, 1) <= self._p:
+                if self._p == 1.0 or random.random() <= self._p:
                     self._t0 = None
                     return 1, {}
                 else:
@@ -183,7 +183,7 @@ class PeriodicTrigger(BaseTrigger):
 
         if now - self._last_fire_time >= self._interval_ms:
             self._last_fire_time = now
-            if random.uniform(0, 1) <= self._p:
+            if self._p == 1.0 or random.random() <= self._p:
                 return 1, {}
             else:
                 return 2, {}
