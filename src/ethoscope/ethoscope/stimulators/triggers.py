@@ -52,7 +52,7 @@ class InactivityTrigger(BaseTrigger):
     ):
         super().__init__()
         self._velocity_correction_coef = float(velocity_correction_coef)
-        self._inactivity_time_threshold_ms = float(min_inactive_time) * 1000
+        self._inactivity_time_threshold_ms = int(round(min_inactive_time * 1000))
         self._t0 = None
 
         p = float(stimulus_probability)
@@ -92,14 +92,13 @@ class InactivityTrigger(BaseTrigger):
         return False
 
     def check(self):
-        now = self._tracker.last_time_point
-        has_moved = self._has_moved()
+        now: int = self._tracker.last_time_point
 
         if self._t0 is None:
             self._t0 = now
 
-        if not has_moved:
-            if float(now - self._t0) > self._inactivity_time_threshold_ms:
+        if not self._has_moved():
+            if (now - self._t0) > self._inactivity_time_threshold_ms:
                 if self._p == 1.0 or random.random() <= self._p:
                     self._t0 = None
                     return 1, {}
