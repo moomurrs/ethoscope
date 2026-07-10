@@ -722,6 +722,13 @@ step_configure_raspberry_pi_hardware() {
     echo 'camera_auto_detect=1' >> "$BOOTCFG"
     echo 'dtparam=camera=on' >> "$BOOTCFG"
 
+    # disable red led
+    echo 'dtparam=pwr_led_trigger=default-on' >> "$BOOTCFG"
+    echo 'dtparam=pwr_led_activelow=off' >> "$BOOTCFG"
+    # disable green led
+    echo 'dtparam=act_led_trigger=none' >> "$BOOTCFG"
+    echo 'dtparam=act_led_activelow=off' >> "$BOOTCFG"
+
     print_success "Hardware configured for $PI_MODEL"
 }
 
