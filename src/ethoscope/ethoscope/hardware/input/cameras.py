@@ -694,16 +694,28 @@ class PiFrameGrabber2(PiFrameGrabber):
                 logging.info(
                     "Creating Picamera2 instance with forced NoIR tuning for IR pass-through filter"
                 )
-                try:
-                    capture = Picamera2(
-                        tuning=Picamera2.load_tuning_file(
-                            "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
+                # Try IMX708 (V3) first, then fall back to IMX219 (V2)
+                noir_tuning_files = [
+                    "/usr/share/libcamera/ipa/rpi/vc4/imx708_noir.json",
+                    "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json",
+                ]
+                capture = None
+                for tuning_file in noir_tuning_files:
+                    try:
+                        capture = Picamera2(
+                            tuning=Picamera2.load_tuning_file(tuning_file)
                         )
-                    )
-                    logging.info("Successfully loaded NoIR tuning file")
-                except Exception as e:
+                        logging.info(
+                            f"Successfully loaded NoIR tuning file: {tuning_file}"
+                        )
+                        break
+                    except Exception as e:
+                        logging.debug(f"Failed to load tuning file {tuning_file}: {e}")
+                        continue
+
+                if capture is None:
                     logging.warning(
-                        f"Failed to load NoIR tuning file, falling back to automatic detection: {e}"
+                        "Failed to load any NoIR tuning file, falling back to automatic detection"
                     )
                     capture = Picamera2()
             else:
@@ -733,10 +745,25 @@ class PiFrameGrabber2(PiFrameGrabber):
                 # The appropriate size of the image acquisition is tricky and depends on the actual hardware.
                 # With IMX219 640x480 will not return the full FoV. 960x720 does.
                 # See https://picamera.readthedocs.io/en/release-1.13/fov.html for a full description
+                #
+                # For V3 cameras with 16:9 native sensors, requesting 4:3 resolutions like 1280x960
+                # causes a zoomed-in/cropped image. To get the full field of view, we capture at a
+                # higher resolution with 16:9 aspect ratio (or use sensor mode), then downscale and
+                # crop to the target resolution.
 
-                w, h = self._target_resolution
+                # Force the sensor to read out at its native 16:9 mode for maximum FoV
+                # The ISP will handle the aspect ratio conversion and downscaling in hardware
+                target_w, target_h = self._target_resolution
+
+                # IMX708 (V3): 2304x1296 (16:9 full FoV)
+                # IMX219 (V2): 1920x1080 (16:9 full FoV)
+                # Using 2304x1296 which works for both - IMX219 will use its closest mode
+                sensor_w, sensor_h = 2304, 1296
+
                 logging.info(
-                    f"Configuring camera with resolution: {w}x{h}, fps: {self._target_fps}"
+                    f"Target resolution: {target_w}x{target_h}, "
+                    f"Sensor mode: {sensor_w}x{sensor_h} (full FoV), "
+                    f"fps: {self._target_fps}"
                 )
 
                 # Configure camera controls optimized for tracking (prioritize exposure over gain)
@@ -745,6 +772,8 @@ class PiFrameGrabber2(PiFrameGrabber):
                     "ExposureTime": 0,  # 0 = auto-exposure (libcamera 0.5.0 compatible)
                     "AnalogueGain": self._gain,  # Fixed gain to avoid tracking artifacts
                     "AwbEnable": False,  # Disable auto-white balance (NoIR cameras)
+                    "AfMode": 0,  # Manual focus mode
+                    "LensPosition": 7.50,  # Fixed focus position
                     # Prioritize exposure adjustments over gain to minimize noise artifacts
                     # that interfere with background subtraction tracking algorithms
                 }
@@ -752,18 +781,16 @@ class PiFrameGrabber2(PiFrameGrabber):
                 # Note: Automatic tuning detection allows libcamera to choose optimal settings
                 # for current illumination conditions (day/night, visible/IR light)
 
+                # Force the sensor to use the full FoV mode without creating a raw RAM stream
                 config = capture.create_video_configuration(
-                    main={"size": (w, h), "format": "YUV420"},
-                    raw=None,  # Explicitly disable raw stream to prevent dual-stream issues
-                    buffer_count=2,  # Still image capture normally configures only a single buffer, as this is all you need. But if you're doing some form of burst capture, increasing the buffer count may enable the application to receive images more quickly.
+                    main={"size": (target_w, target_h), "format": "YUV420"},
+                    sensor={"output_size": (sensor_w, sensor_h)},
+                    buffer_count=2,
                     controls=camera_controls,
                 )
                 logging.info("Camera configuration created successfully")
                 capture.configure(config)
                 logging.info("Camera configured successfully")
-
-                # Explicitly configure exposure/gain after configuration (libcamera 0.5.0 compatible)
-                capture.set_controls({"ExposureTime": 0, "AnalogueGain": self._gain})
 
                 # Log auto-exposure status for debugging
                 try:
@@ -789,6 +816,9 @@ class PiFrameGrabber2(PiFrameGrabber):
                     self._video_time = time.time()
                     self._refresh_interval = time.time()
 
+                    # Create one single buffer for previews (Zero GC bloat)
+                    preview_buffer = np.empty((target_h, target_w), dtype=np.uint8)
+
                     capture.start()
                     capture.start_encoder(
                         encoder, self._get_video_chunk_filename(self._target_fps)
@@ -801,7 +831,9 @@ class PiFrameGrabber2(PiFrameGrabber):
                         ):
                             request = capture.capture_request()
                             with MappedArray(request, "main") as frame:
-                                self._queue.put(frame.array[:h, :])
+                                # Overwrite the single buffer and send it to the queue
+                                np.copyto(preview_buffer, frame.array[:target_h, :])
+                                self._queue.put(preview_buffer)
                             request.release()
                             self._refresh_interval = time.time()
 
@@ -836,7 +868,9 @@ class PiFrameGrabber2(PiFrameGrabber):
                         # channel and the final height/4 rows contain the V channel. For the other formats, where there is an "alpha" value it will
                         # take the fixed value 255
 
-                        self._queue.put(frame[:h, :])
+                        # Extract Y channel from YUV420 for grayscale
+                        # ISP has already handled aspect ratio conversion and downscaling
+                        self._queue.put(frame[:target_h, :])
 
                     logging.info(
                         "The stop queue is not empty. This signals it is time to stop acquiring frames"
