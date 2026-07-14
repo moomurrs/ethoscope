@@ -414,7 +414,7 @@ step_configure_system_identity() {
     # Enable persistent journalctl log instead of volatile (for SSD only!)
     mkdir -p /etc/systemd/journald.conf.d
     # Write the configuration file
-    cat <<EOF | tee /etc/systemd/journald.conf.d/099-persistent-logging.conf > /dev/null
+    cat <<EOF | tee /etc/systemd/journald.conf.d/99-persistent-logging.conf > /dev/null
 [Journal]
 Storage=persistent
 EOF
