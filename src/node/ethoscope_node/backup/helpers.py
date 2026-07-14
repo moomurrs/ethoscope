@@ -3257,6 +3257,14 @@ def get_device_backup_info(
 
     # Enhance with rsync backup service file sizes if available
     databases = _enhance_databases_with_rsync_info(device_id, databases, base_directory)
+    
+    # Filter out SQLite entries with no file size (not yet written or still pending)
+    if "SQLite" in databases:
+        databases["SQLite"] = {
+            name: info
+            for name, info in databases["SQLite"].items()
+            if info.get("filesize", 0) > 0
+        }
 
     # Get device-specific backup sizes for accurate reporting
     device_sizes = _get_device_backup_sizes_cached(device_id, base_directory)
