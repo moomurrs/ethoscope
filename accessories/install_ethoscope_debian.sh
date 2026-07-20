@@ -357,6 +357,10 @@ EOF
     echo $'#!/bin/env bash\npython /opt/ethoscope/src/ethoscope/ethoscope/hardware/interfaces/light_cli.py "$@"' > /usr/bin/ethoscope-light
     chmod +x /usr/bin/ethoscope-light
 
+    # print_info "Setting default camera gain to 1.5..."
+    # mkdir -p /etc/ethoscope
+    # echo "1.5" > /etc/ethoscope/gain_setting
+
     print_success "Ethoscope software installed to /opt/ethoscope"
 }
 
