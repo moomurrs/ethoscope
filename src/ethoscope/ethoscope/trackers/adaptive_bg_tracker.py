@@ -1,7 +1,7 @@
 __author__ = "quentin"
 
 from collections import deque
-from math import log10, pi, sqrt
+from math import exp, log, log10, pi, sqrt
 
 import cv2
 
@@ -199,6 +199,9 @@ class BackgroundModel:
     A class to model background. It uses a dynamic running average and support arbitrary and heterogeneous frame rates
     """
 
+    # Precomputed natural log of 2, used to convert a half-life into a decay rate.
+    _LOG2 = log(2)
+
     def __init__(
         self, max_half_life=500.0 * 1000, min_half_life=5.0 * 1000, increment=1.2
     ):
@@ -256,9 +259,9 @@ class BackgroundModel:
         # the learning rate, alpha, is an exponential function of half life
         # it correspond to how much the present frame should account for the background
 
-        lam = np.log(2) / self._current_half_life
+        lam = self._LOG2 / self._current_half_life
         # how much the current frame should be accounted for
-        alpha = 1 - np.exp(-lam * dt)
+        alpha = 1 - exp(-lam * dt)
 
         # set-p a matrix of learning rate. it is 0 where foreground map is true
         self._buff_alpha_matrix.fill(alpha)
@@ -504,7 +507,7 @@ class AdaptiveBGModel(BaseTracker):
         cv2.threshold(self._buff_fg, 20, 255, cv2.THRESH_TOZERO, dst=self._buff_fg)
 
         # Backup the foreground buffer for subsequent analysis.
-        self._buff_fg_backup = np.copy(self._buff_fg)
+        np.copyto(self._buff_fg_backup, self._buff_fg)
 
         # Calculate the proportion of foreground pixels.
         prop_fg_pix = np.count_nonzero(self._buff_fg) / (grey.size)
@@ -729,6 +732,17 @@ class AdaptiveBGModel(BaseTracker):
         # todo center mass just on the ellipse area
         cv2.bitwise_and(self._buff_fg_backup, self._buff_fg, self._buff_fg_backup)
 
-        y, x = ndimage.center_of_mass(self._buff_fg_backup)
+        # Calculate all moments of the image array
+        M = cv2.moments(self._buff_fg_backup)
+
+        # m00 is the total area. We must check if it's zero to avoid a ZeroDivisionError
+        # which will crash your script if a frame has no flies (a completely black mask).
+        if M["m00"] != 0:
+            x = M["m10"] / M["m00"]
+            y = M["m01"] / M["m00"]
+        else:
+            # failed to get center of mass
+            logging.warning("Failed to get center of mass.")
+            raise NoPositionError
 
         return (x, y), (w, h), angle

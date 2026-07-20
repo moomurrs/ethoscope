@@ -769,7 +769,8 @@ class PiFrameGrabber2(PiFrameGrabber):
                 # Configure camera controls optimized for tracking (prioritize exposure over gain)
                 camera_controls = {
                     "FrameRate": self._target_fps,
-                    "ExposureTime": 0,  # 0 = auto-exposure (libcamera 0.5.0 compatible)
+                    "ExposureTime": 45000,
+                    "HdrMode": 0,
                     "AnalogueGain": self._gain,  # Fixed gain to avoid tracking artifacts
                     "AwbEnable": False,  # Disable auto-white balance (NoIR cameras)
                     "AfMode": 0,  # Manual focus mode
@@ -792,7 +793,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                 capture.configure(config)
                 logging.info("Camera configured successfully")
 
-                # Log auto-exposure status for debugging
+                # Log camera status for debugging
                 try:
                     exposure_time = capture.camera_controls.get(
                         "ExposureTime", "Unknown"
@@ -801,7 +802,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                         "AnalogueGain", "Unknown"
                     )
                     logging.info(
-                        f"Auto-exposure status - ExposureTime: {exposure_time}, AnalogueGain: {analogue_gain}"
+                        f"Camera control status - ExposureTime: {exposure_time}, AnalogueGain: {analogue_gain}"
                     )
                 except Exception as e:
                     logging.warning(f"Could not check auto-exposure status: {e}")
