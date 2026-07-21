@@ -375,14 +375,20 @@ def set_WIFI(ssid="ETHOSCOPE_WIFI", wpakey="ETHOSCOPE_1234", useSTATIC=False):
         with os.popen(wpa_cmd) as cmd:
             logging.info(cmd.read())
 
-        wlan_settings_systemd = "[Match]\nName=wlan0\n\n[DHCPv4]\nRouteMetric=20\n"
-
-        if useSTATIC:
-            wlan_settings_systemd += (
-                f"[Network]\nAddress={ip_address}/24\nGateway={gateway}\nDHCP=no"
-            )
-        else:
-            wlan_settings_systemd += "[Network]\nDHCP=yes"
+        wlan_settings_systemd = (
+            "[Match]\n"
+            "Name=wlan0\n"
+            "\n"
+            "[DHCPv4]\n"
+            "ClientIdentifier=mac\n"
+            "KeepConfiguration=yes\n"
+            "UseHostname=yes\n"
+            "RouteMetric=20\n"
+            "\n"
+            "[Network]\n"
+            "DHCP=yes\n"
+            "# Address=10.XX.XX.XXX/24 # YOUR CURRENT IP (local)\n"
+        )
 
         with open(systemd_file, "w") as f:
             f.write(wlan_settings_systemd)
