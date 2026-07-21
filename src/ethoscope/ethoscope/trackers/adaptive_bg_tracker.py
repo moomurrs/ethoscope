@@ -14,7 +14,6 @@ except Exception:
 import logging
 
 import numpy as np
-from scipy import ndimage
 
 from ethoscope.core.data_point import DataPoint
 from ethoscope.core.variables import (
