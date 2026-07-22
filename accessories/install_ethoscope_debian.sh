@@ -678,7 +678,6 @@ step_configure_raspberry_pi_hardware() {
     echo 'hdmi_force_hotplug=1' >> "$BOOTCFG"
     echo 'dtparam=i2c_arm=on' >> "$BOOTCFG"
     echo 'i2c-dev' >> /etc/modules-load.d/raspberrypi.conf
-    echo 'disable_camera_led=1' >> "$BOOTCFG"
 
     case "$PI_MODEL" in
         pi2|pi3)
@@ -696,17 +695,12 @@ step_configure_raspberry_pi_hardware() {
             print_info "Configuring camera for Pi ${PI_MODEL#pi}..."
             echo 'dtoverlay=vc4-kms-v3d' >> "$BOOTCFG"
             echo 'gpu_mem=256' >> "$BOOTCFG"
-            echo 'dtoverlay=imx219' >> "$BOOTCFG"
             ;;
         *)
             print_info "Using basic camera configuration..."
             echo 'gpu_mem=128' >> "$BOOTCFG"
-            echo 'dtoverlay=imx219' >> "$BOOTCFG"
             ;;
     esac
-
-    echo 'camera_auto_detect=1' >> "$BOOTCFG"
-    echo 'dtparam=camera=on' >> "$BOOTCFG"
 
     # disable red led
     echo 'dtparam=pwr_led_trigger=default-on' >> "$BOOTCFG"
