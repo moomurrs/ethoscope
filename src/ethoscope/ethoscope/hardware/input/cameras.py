@@ -774,7 +774,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                     "AnalogueGain": self._gain,  # Fixed gain to avoid tracking artifacts
                     "AwbEnable": False,  # Disable auto-white balance (NoIR cameras)
                     "AfMode": 0,  # Manual focus mode
-                    "LensPosition": 7.50,  # Fixed focus position
+                    "LensPosition": 6.70,  # Fixed focus position
                     # Prioritize exposure adjustments over gain to minimize noise artifacts
                     # that interfere with background subtraction tracking algorithms
                 }
