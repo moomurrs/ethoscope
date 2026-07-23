@@ -1,6 +1,7 @@
 __author__ = "quentin"
 
 import time
+from typing import override
 
 from ethoscope.core.variables import BaseIntVariable
 from ethoscope.hardware.interfaces.interfaces import DefaultInterface
@@ -193,9 +194,18 @@ class DefaultStimulator(BaseStimulator):
     }
     _HardwareInterfaceClass = DefaultInterface
 
+    @override
+    def apply(self):
+        if self._tracker is None:
+            raise ValueError(
+                "No tracker bound to this stimulator. Use `bind_tracker()` methods"
+            )
+        return HasInteractedVariable(False), {}
+
+    @override
     def _decide(self):
-        out = HasInteractedVariable(False)
-        return out, {}
-    
+        return HasInteractedVariable(False), {}
+
+    @override
     def get_stimulator_state(self, t=None):
         return "inactive"
