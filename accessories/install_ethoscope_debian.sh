@@ -491,6 +491,15 @@ step_enable_system_services() {
         systemctl enable avahi-daemon.service 2>/dev/null
         print_success "Enabled avahi-daemon.service"
     fi
+
+    # Disable background timers that can interfere with tracking / package installs
+    print_info "Disabling background timers (apt-daily, apt-daily-upgrade, man-db)..."
+    systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+    systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+    systemctl mask apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
+    systemctl stop man-db.timer 2>/dev/null || true
+    systemctl mask man-db.timer 2>/dev/null || true
 }
 
 #===============================================================================
