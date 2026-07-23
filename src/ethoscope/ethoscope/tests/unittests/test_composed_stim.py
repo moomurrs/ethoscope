@@ -332,7 +332,7 @@ class TestComposedStimulatorYoking(unittest.TestCase):
     # ------------------------------------------------------------------ #
 
     def test_deliver_sends_yoked_instruction(self):
-        """_deliver sends an extra instruction for the yoked partner channel."""
+        """_deliver batches the primary and yoked instructions into one atomic call."""
         mock_hw = Mock()
         mock_hw.interrogate.side_effect = Exception("no module")
         stim = ComposedStimulator(
@@ -348,16 +348,37 @@ class TestComposedStimulatorYoking(unittest.TestCase):
         # Call _deliver with a yoked partner
         stim._deliver(channel=1, duration=1000, _yoked_partner_channel=yoked_channel)
 
-        # Primary instruction was sent by the parent _deliver (via send_instruction)
-        # Yoked instruction is sent explicitly after super()._deliver()
+        # The primary and yoked instructions are sent as a single batched call
+        # (one send_instruction with a list of two dicts), for atomic delivery.
         send_calls = mock_hw.send_instruction.call_args_list
-        # At least 2 calls: primary + yoked
-        self.assertGreaterEqual(
-            len(send_calls), 2, "Expected primary + yoked instruction"
+        self.assertEqual(
+            len(send_calls),
+            1,
+            "Expected a single batched send_instruction call (primary + yoked)",
         )
-        # The last call should be the yoked instruction
-        last_call_kw = send_calls[-1][1] if send_calls[-1][1] else send_calls[-1][0][0]
-        self.assertEqual(last_call_kw.get("channel"), yoked_channel)
+
+        # Inspect the single call's payload
+        call = send_calls[0]
+        payload = call.kwargs.get("instruction")
+        if payload is None and call.args:
+            payload = call.args[0]
+
+        self.assertIsInstance(
+            payload, list, "Batched call should pass a list of instructions"
+        )
+        self.assertEqual(len(payload), 2, "Batch should contain primary + yoked")
+
+        primary, yoked = payload
+        self.assertEqual(primary.get("channel"), 1)
+        self.assertEqual(primary.get("duration"), 1000)
+        self.assertEqual(
+            yoked.get("channel"),
+            yoked_channel,
+            "Yoked instruction must target the yoked partner's channel",
+        )
+        # The yoked instruction should not leak the private key
+        self.assertNotIn("_yoked_partner_channel", primary)
+        self.assertNotIn("_yoked_partner_channel", yoked)
 
     def test_deliver_without_yoked_partner(self):
         """_deliver without _yoked_partner_channel sends only the primary instruction."""
