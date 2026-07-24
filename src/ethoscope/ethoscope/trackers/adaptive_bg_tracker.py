@@ -26,13 +26,13 @@ from ethoscope.core.variables import (
 )
 from ethoscope.trackers.trackers import BaseTracker, NoPositionError
 
+_SQRT_2_PI = sqrt(2.0 * pi)
+
 
 class ObjectModel:
     """
     A class to model, update and predict foreground object (i.e. tracked animal).
     """
-
-    _sqrt_2_pi = sqrt(2.0 * pi)
 
     def __init__(self, history_length=1000):
         # fixme this should be time, not number of points!
@@ -104,7 +104,7 @@ class ObjectModel:
         if (stds == 0).any():
             return 0
 
-        a = 1 / (stds * self._sqrt_2_pi)
+        a = 1 / (stds * _SQRT_2_PI)
 
         b = np.exp(-((features - means) ** 2) / (2 * stds**2))
 
@@ -131,9 +131,7 @@ class ObjectModel:
             # Return default features when no valid region exists
             return np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
-        if self._roi_img_buff is None or np.any(
-            self._roi_img_buff.shape < img.shape[0:2]
-        ):
+        if self._roi_img_buff is None or self._roi_img_buff.shape[:2] < img.shape[0:2]:
             # dynamically reallocate buffer if needed
             self._img_buff_shape[1] = max(self._img_buff_shape[1], w)
             self._img_buff_shape[0] = max(self._img_buff_shape[0], h)
@@ -193,13 +191,14 @@ class ObjectModel:
         return features
 
 
+# Precomputed natural log of 2, used to convert a half-life into a decay rate.
+_LOG2 = log(2)
+
+
 class BackgroundModel:
     """
     A class to model background. It uses a dynamic running average and support arbitrary and heterogeneous frame rates
     """
-
-    # Precomputed natural log of 2, used to convert a half-life into a decay rate.
-    _LOG2 = log(2)
 
     def __init__(
         self, max_half_life=500.0 * 1000, min_half_life=5.0 * 1000, increment=1.2
@@ -258,7 +257,7 @@ class BackgroundModel:
         # the learning rate, alpha, is an exponential function of half life
         # it correspond to how much the present frame should account for the background
 
-        lam = self._LOG2 / self._current_half_life
+        lam = _LOG2 / self._current_half_life
         # how much the current frame should be accounted for
         alpha = 1 - exp(-lam * dt)
 
