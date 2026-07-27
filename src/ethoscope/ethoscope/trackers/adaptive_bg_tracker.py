@@ -1,18 +1,10 @@
 __author__ = "quentin"
 
+import logging
 from collections import deque
 from math import exp, log, log10, pi, sqrt
 
 import cv2
-
-try:
-    CV_VERSION = int(cv2.__version__.split(".")[0])
-except Exception:
-    CV_VERSION = 2
-
-
-import logging
-
 import numpy as np
 
 from ethoscope.core.data_point import DataPoint
@@ -26,6 +18,7 @@ from ethoscope.core.variables import (
 )
 from ethoscope.trackers.trackers import BaseTracker, NoPositionError
 
+CV_VERSION = cv2.getVersionMajor()
 _SQRT_2_PI = sqrt(2.0 * pi)
 
 
