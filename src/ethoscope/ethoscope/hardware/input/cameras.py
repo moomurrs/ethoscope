@@ -9,54 +9,20 @@ import traceback
 
 import cv2
 import numpy as np
-
-try:
-    from cv2.cv import CV_CAP_PROP_FPS as CAP_PROP_FPS
-    from cv2.cv import CV_CAP_PROP_FRAME_COUNT as CAP_PROP_FRAME_COUNT
-    from cv2.cv import CV_CAP_PROP_FRAME_HEIGHT as CAP_PROP_FRAME_HEIGHT
-    from cv2.cv import CV_CAP_PROP_FRAME_WIDTH as CAP_PROP_FRAME_WIDTH
-    from cv2.cv import CV_CAP_PROP_POS_MSEC as CAP_PROP_POS_MSEC
-
-except ImportError:
-    from cv2 import (
-        CAP_PROP_FPS,
-        CAP_PROP_FRAME_COUNT,
-        CAP_PROP_FRAME_HEIGHT,
-        CAP_PROP_FRAME_WIDTH,
-        CAP_PROP_POS_MSEC,
-    )
+from cv2 import (
+    CAP_PROP_FPS,
+    CAP_PROP_FRAME_COUNT,
+    CAP_PROP_FRAME_HEIGHT,
+    CAP_PROP_FRAME_WIDTH,
+    CAP_PROP_POS_MSEC,
+)
+from picamera2 import MappedArray, Picamera2
 
 from ethoscope.utils import pi
 from ethoscope.utils.debug import EthoscopeException
 
-# Check for picamera2 availability and import if available
-if importlib.util.find_spec("picamera2") is not None:
-    USE_PICAMERA2 = True
-    CAMERA_AVAILABLE = True
-    try:
-        from picamera2 import MappedArray, Picamera2
-
-        logging.info("Successfully imported picamera2")
-    except (ImportError, OSError) as e:
-        logging.error(f"Failed to import picamera2: {e}")
-        USE_PICAMERA2 = False
-        CAMERA_AVAILABLE = False
-        Picamera2 = None
-        MappedArray = None
-elif importlib.util.find_spec("picamera") is not None:
-    USE_PICAMERA2 = False
-    CAMERA_AVAILABLE = True
-    logging.info("Using picamera instead of picamera2")
-    Picamera2 = None
-    MappedArray = None
-else:
-    USE_PICAMERA2 = None
-    CAMERA_AVAILABLE = False
-    Picamera2 = None
-    MappedArray = None
-    logging.warning(
-        "No camera library available (neither picamera2 nor picamera found). Camera functionality will be disabled."
-    )
+USE_PICAMERA2 = True
+CAMERA_AVAILABLE = True
 
 
 class BaseCamera:
