@@ -399,14 +399,9 @@ class MultiFlyTracker(BaseTracker):
             self._bg_model.increase_learning_rate()
             raise NoPositionError
 
-        if CV_VERSION == 3:
-            _, contours, hierarchy = cv2.findContours(
-                self._buff_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-        else:
-            contours, hierarchy = cv2.findContours(
-                self._buff_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
+        contours, hierarchy = cv2.findContours(
+            self._buff_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
         contours = [cv2.approxPolyDP(c, 1.2, True) for c in contours]
 
