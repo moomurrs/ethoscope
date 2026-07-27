@@ -108,14 +108,9 @@ class ArenaMaskROIBuilder(BaseROIBuilder):
     def _rois_from_img(self, img):
         corrected_mask = self._get_corrected_mask(self, self._mask)
         # get all external contours
-        if CV_VERSION == 3:
-            _, contours, hierarchy = cv2.findContours(
-                np.copy(corrected_mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-        else:
-            contours, hierarchy = cv2.findContours(
-                np.copy(corrected_mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
+        contours, hierarchy = cv2.findContours(
+            np.copy(corrected_mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
         rois = []
 
@@ -124,14 +119,9 @@ class ArenaMaskROIBuilder(BaseROIBuilder):
                 tmp_mask = np.zeros_like(corrected_mask)
                 cv2.drawContours(tmp_mask, [c], 0, 1)
 
-                if CV_VERSION == 3:
-                    _, sub_contours, sub_hierarchy = cv2.findContours(
-                        np.copy(tmp_mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                else:
-                    sub_contours, sub_hierarchy = cv2.findContours(
-                        np.copy(tmp_mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
+                sub_contours, sub_hierarchy = cv2.findContours(
+                    np.copy(tmp_mask), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
 
                 rois.append(
                     ROI(

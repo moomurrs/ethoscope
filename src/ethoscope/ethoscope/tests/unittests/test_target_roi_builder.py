@@ -28,7 +28,6 @@ LOG_DIR = "./test_logs/"
 
 
 class TestTargetROIBuilder(unittest.TestCase):
-
     def setUp(self):
         # Create temporary directory for diagnostic data
         self.temp_dir = tempfile.mkdtemp(prefix="test_target_roi_")
@@ -215,7 +214,7 @@ class TestTargetROIBuilder(unittest.TestCase):
 
         # Test CV_VERSION was set correctly
         self.assertIsInstance(target_roi_builder.CV_VERSION, int)
-        self.assertIn(target_roi_builder.CV_VERSION, [2, 3, 4])
+        self.assertIn(target_roi_builder.CV_VERSION, [4, 5])
 
         # Test that LINE_AA constant was imported
         self.assertTrue(hasattr(target_roi_builder, "LINE_AA"))

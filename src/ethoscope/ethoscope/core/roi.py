@@ -52,14 +52,9 @@ class ROI:
         if regions is None:
             self._regions = self._polygon
         else:
-            if CV_VERSION == 3:
-                _, self._regions, self._hierarchy = cv2.findContours(
-                    np.copy(self._polygon), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
-                )
-            else:
-                self._regions, self._hierarchy = cv2.findContours(
-                    np.copy(self._polygon), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
-                )
+            self._regions, self._hierarchy = cv2.findContours(
+                np.copy(self._polygon), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+            )
 
     @property
     def idx(self):

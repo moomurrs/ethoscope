@@ -222,14 +222,8 @@ class TargetGridROIBuilder(BaseROIBuilder):
             cv2.threshold(grey, t, 255, cv2.THRESH_BINARY_INV, bin)
             if np.count_nonzero(bin) > 0.7 * im.shape[0] * im.shape[1]:
                 continue
-            if CV_VERSION == 3:
-                _, contours, h = cv2.findContours(
-                    bin, cv2.RETR_EXTERNAL, CHAIN_APPROX_SIMPLE
-                )
-            else:
-                contours, h = cv2.findContours(
-                    bin, cv2.RETR_EXTERNAL, CHAIN_APPROX_SIMPLE
-                )
+
+            contours, h = cv2.findContours(bin, cv2.RETR_EXTERNAL, CHAIN_APPROX_SIMPLE)
 
             bin.fill(0)
             for c in contours:
@@ -398,14 +392,8 @@ class TargetGridROIBuilder(BaseROIBuilder):
         # Find threshold that gives exactly 3 high-quality, geometrically valid targets
         for t in range(0, 255, 1):
             cv2.threshold(map, t, 255, cv2.THRESH_BINARY, bin)
-            if CV_VERSION == 3:
-                _, contours, h = cv2.findContours(
-                    bin, cv2.RETR_EXTERNAL, CHAIN_APPROX_SIMPLE
-                )
-            else:
-                contours, h = cv2.findContours(
-                    bin, cv2.RETR_EXTERNAL, CHAIN_APPROX_SIMPLE
-                )
+
+            contours, h = cv2.findContours(bin, cv2.RETR_EXTERNAL, CHAIN_APPROX_SIMPLE)
 
             # Only proceed if we have exactly 3 contours
             if len(contours) != 3:
