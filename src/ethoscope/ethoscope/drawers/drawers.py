@@ -1,16 +1,11 @@
 __author__ = "quentin"
 
 import logging
+import os
 
 import cv2
-
-try:
-    from cv2.cv import CV_AA as LINE_AA
-    from cv2.cv import CV_FOURCC as VideoWriter_fourcc
-except ImportError:
-    from cv2 import LINE_AA, VideoWriter_fourcc
-
-import os
+import numpy as np
+from cv2 import LINE_AA, VideoWriter_fourcc
 
 
 class BaseDrawer:
@@ -79,8 +74,19 @@ class BaseDrawer:
         :return:
         """
 
-        # self._last_drawn_frame = img.copy()
-        self._last_drawn_frame = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        # Check if pre-allocated buffer exists and has the same dimension/type
+        if (
+            self._last_drawn_frame is None
+            or self._last_drawn_frame.shape[:2] != img.shape[:2]
+            or self._last_drawn_frame.dtype != img.dtype
+        ):
+            # Doesn't exist, create contiguous pre-allocation
+            self._last_drawn_frame = np.empty(
+                (img.shape[0], img.shape[1], 3), dtype=img.dtype
+            )
+
+        # In-place GRAY->BGR into the reused buffer to avoid per-frame allocation.
+        cv2.cvtColor(img, cv2.COLOR_GRAY2BGR, dst=self._last_drawn_frame)
 
         self._annotate_frame(
             self._last_drawn_frame, positions, tracking_units, reference_points
@@ -261,7 +267,6 @@ class DefaultDrawer(BaseDrawer):
             pass
 
         for track_u in tracking_units:
-
             # Debug logging for each tracking unit (log once per stimulator type)
             stimulator_type = type(track_u.stimulator).__name__
             log_key = f"stimulator_type_{track_u.roi.idx}"
