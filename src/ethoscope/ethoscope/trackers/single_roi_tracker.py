@@ -3,13 +3,6 @@ __author__ = "quentin"
 from collections import deque
 
 import cv2
-
-try:
-    CV_VERSION = int(cv2.__version__.split(".")[0])
-except Exception:
-    CV_VERSION = 2
-
-
 import numpy as np
 
 from ethoscope.core.data_point import DataPoint
@@ -24,9 +17,10 @@ from ethoscope.trackers.adaptive_bg_tracker import BackgroundModel
 from ethoscope.trackers.trackers import BaseTracker, NoPositionError
 from ethoscope.utils.img_proc import merge_blobs
 
+CV_VERSION = cv2.getVersionMajor()
+
 
 class AdaptiveBGModelOneObject(BaseTracker):
-
     def __init__(self, roi, data=None):
 
         self._object_expected_size = 0.005  # proportion of the roi main axis
@@ -127,7 +121,6 @@ class AdaptiveBGModelOneObject(BaseTracker):
             raise NoPositionError
 
         elif len(contours) > 1:
-
             hulls = [cv2.convexHull(c) for c in contours]
             hulls = merge_blobs(hulls)
 

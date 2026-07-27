@@ -1,16 +1,10 @@
 __author__ = "quentin"
 # flake8: noqa: E402
+import logging
+import os
 from collections import deque
 
 import cv2
-
-from .adaptive_bg_tracker import BackgroundModel
-
-CV_VERSION = int(cv2.__version__.split(".")[0])
-
-import logging
-import os
-
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.spatial import distance
@@ -25,9 +19,12 @@ from ethoscope.core.variables import (
 )
 from ethoscope.trackers.trackers import BaseTracker, NoPositionError
 
+from .adaptive_bg_tracker import BackgroundModel
+
+CV_VERSION = cv2.getVersionMajor()
+
 
 class ForegroundModel:
-
     def __init__(
         self,
         fg_data=None,
@@ -83,7 +80,6 @@ class ForegroundModel:
         self.total_pool.append(area)
 
         if self._visualise and len(self.total_pool) % 1000 == 0:
-
             # refresh plot every 1000 contours received
             self.ax1.clear()  # not sure why I need to clear the axis here. In principle it should not be necessary.
             self.ax2.clear()
@@ -328,7 +324,7 @@ class MultiFlyTracker(BaseTracker):
         fg_img[:] = filtered_img
 
         logging.debug(
-            f"Applied enhanced morphological filtering: opening({opening_kernel_size}), closing({closing_kernel_size}), removed {num_labels-1-np.count_nonzero(np.unique(filtered_img))+1} large components"
+            f"Applied enhanced morphological filtering: opening({opening_kernel_size}), closing({closing_kernel_size}), removed {num_labels - 1 - np.count_nonzero(np.unique(filtered_img)) + 1} large components"
         )
 
         return fg_img
@@ -438,7 +434,6 @@ class MultiFlyTracker(BaseTracker):
         out_pos = []
 
         for _n_vc, vc in enumerate(valid_contours):
-
             # calculates the parameters to draw the centroid
             (x, y), (w, h), angle = cv2.minAreaRect(vc)
 
@@ -513,7 +508,6 @@ class MultiFlyTracker(BaseTracker):
 
 
 class HaarTracker(BaseTracker):
-
     _description = {
         "overview": "An experimental tracker to monitor several animals per ROI using a Haar Cascade.",
         "arguments": [],

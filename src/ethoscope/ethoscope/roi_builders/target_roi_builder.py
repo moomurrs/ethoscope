@@ -1,25 +1,12 @@
 __author__ = "quentin"
 
-import logging  # noqa: F811
+import itertools
+import logging  # noqa: F811  # noqa: F811
 import time
 
 import cv2
-
-try:
-    CV_VERSION = int(cv2.__version__.split(".")[0])
-except Exception:
-    CV_VERSION = 2
-
-try:
-    from cv2.cv import CV_AA as LINE_AA
-    from cv2.cv import CV_CHAIN_APPROX_SIMPLE as CHAIN_APPROX_SIMPLE
-except ImportError:
-    from cv2 import CHAIN_APPROX_SIMPLE, LINE_AA
-
-import itertools
-import logging  # noqa: F811
-
 import numpy as np
+from cv2 import CHAIN_APPROX_SIMPLE, LINE_AA
 
 from ethoscope.core.roi import ROI
 from ethoscope.roi_builders.roi_builders import BaseROIBuilder
@@ -27,9 +14,10 @@ from ethoscope.roi_builders.target_detection_diagnostics import (
     TargetDetectionDiagnostics,
 )
 
+CV_VERSION = cv2.getVersionMajor()
+
 
 class TargetGridROIBuilder(BaseROIBuilder):
-
     _adaptive_med_rad = 0.10
     _expected__min_target_dist = (
         10  # the minimal distance between two targets, in 'target diameter'

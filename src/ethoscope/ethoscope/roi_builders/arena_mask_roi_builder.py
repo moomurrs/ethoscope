@@ -1,22 +1,17 @@
 __author__ = "diana"
 
-import cv2
-
-try:
-    CV_VERSION = int(cv2.__version__.split(".")[0])
-except Exception:
-    CV_VERSION = 2
-
 import logging
 
+import cv2
 import numpy as np
 
 from ethoscope.core.roi import ROI
 from ethoscope.roi_builders.roi_builders import BaseROIBuilder
 
+CV_VERSION = cv2.getVersionMajor()
+
 
 class ArenaMaskROIBuilder(BaseROIBuilder):
-
     def __init__(self, mask_path):
         """
         Class to build rois from greyscale image file.

@@ -3,16 +3,12 @@ import numpy as np
 
 from ethoscope.utils.debug import EthoscopeException
 
-try:
-    CV_VERSION = int(cv2.__version__.split(".")[0])
-except Exception:
-    CV_VERSION = 2
+CV_VERSION = cv2.getVersionMajor()
 
 __author__ = "quentin"
 
 
 class ROI:
-
     def __init__(
         self, polygon, idx, value=None, orientation=None, regions=None, hierarchy=None
     ):

@@ -1,26 +1,15 @@
 import cv2
-
-try:
-    CV_VERSION = int(cv2.__version__.split(".")[0])
-except Exception:
-    CV_VERSION = 2
-
-try:
-    from cv import CV_CHAIN_APPROX_SIMPLE as CHAIN_APPROX_SIMPLE
-    from cv import CV_RETR_EXTERNAL as RETR_EXTERNAL
-    from cv2 import CV_LOAD_IMAGE_GRAYSCALE as IMG_READ_FLAG_GREY
-except ImportError:
-    from cv2 import CHAIN_APPROX_SIMPLE, RETR_EXTERNAL
-    from cv2 import IMREAD_GRAYSCALE as IMG_READ_FLAG_GREY
-
 import numpy as np
+from cv2 import CHAIN_APPROX_SIMPLE, RETR_EXTERNAL
+from cv2 import IMREAD_GRAYSCALE as IMG_READ_FLAG_GREY
 
 from ethoscope.core.roi import ROI
 from ethoscope.roi_builders.roi_builders import BaseROIBuilder
 
+CV_VERSION = cv2.getVersionMajor()
+
 
 class ImgMaskROIBuilder(BaseROIBuilder):
-
     def __init__(self, mask_path):
         """
         Class to build rois from greyscale image file.
