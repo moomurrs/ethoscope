@@ -263,6 +263,8 @@ step_install_apt_packages() {
         python3-dev \
         libcap-dev \
         pkg-config \
+        python3-opencv \
+        python3-picamera2 \
         git wget curl lm-sensors btop
 
     print_info "Restarting network services to ensure DNS works..."
@@ -341,9 +343,9 @@ EOF
     cd /opt/ethoscope/src/ethoscope
     pip3 install -e . --break-system-packages --ignore-installed
 
-    print_info "Configuring picamera2..."
-    pip3 uninstall -y picamera 2>/dev/null || true
-    pip3 install picamera2 --break-system-packages 2>/dev/null || true
+    #print_info "Configuring picamera2..."
+    #pip3 uninstall -y picamera 2>/dev/null || true
+    #pip3 install picamera2 --break-system-packages 2>/dev/null || true
 
     print_info "Installing systemd service files..."
     rm -rf /usr/lib/systemd/system/{ethoscope_device,ethoscope_listener,ethoscope_GPIO_listener,ethoscope_light,ethoscope_update}.service 2>/dev/null
@@ -687,29 +689,6 @@ step_configure_raspberry_pi_hardware() {
     echo 'hdmi_force_hotplug=1' >> "$BOOTCFG"
     echo 'dtparam=i2c_arm=on' >> "$BOOTCFG"
     echo 'i2c-dev' >> /etc/modules-load.d/raspberrypi.conf
-
-    case "$PI_MODEL" in
-        pi2|pi3)
-            print_info "Configuring legacy camera (Pi 2/3)..."
-            echo 'start_file=start_x.elf' >> "$BOOTCFG"
-            echo 'fixup_file=fixup_x.dat' >> "$BOOTCFG"
-            echo 'gpu_mem=256' >> "$BOOTCFG"
-            echo 'cma_lwm=' >> "$BOOTCFG"
-            echo 'cma_hwm=' >> "$BOOTCFG"
-            echo 'cma_offline_start=' >> "$BOOTCFG"
-            echo 'awb_auto_is_greyworld=1' >> "$BOOTCFG"
-            echo 'bcm2835-v4l2' > /etc/modules-load.d/picamera.conf
-            ;;
-        pi4|pi5)
-            print_info "Configuring camera for Pi ${PI_MODEL#pi}..."
-            echo 'dtoverlay=vc4-kms-v3d' >> "$BOOTCFG"
-            echo 'gpu_mem=256' >> "$BOOTCFG"
-            ;;
-        *)
-            print_info "Using basic camera configuration..."
-            echo 'gpu_mem=128' >> "$BOOTCFG"
-            ;;
-    esac
 
     # disable red led
     echo 'dtparam=pwr_led_trigger=default-on' >> "$BOOTCFG"
