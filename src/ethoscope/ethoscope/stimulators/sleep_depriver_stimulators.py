@@ -273,7 +273,7 @@ class OptomotorSleepDepriver(SleepDepStimulator):
 
     _description = {
         "overview": "A stimulator to sleep deprive using motors and/or LEDs (MODULE 3). Supports motor, LED pulse, and LED pulse train modes.",
-        "hidden": False,
+        "hidden": True,
         "arguments": [
             {
                 "type": "number",
@@ -353,42 +353,10 @@ class OptomotorSleepDepriver(SleepDepStimulator):
                 "description": "Active time period",
                 "default": "",
             },
-            {
-                "type": "boolean",
-                "name": "yoking_enabled",
-                "description": "Enable yoking: focal ROIs (1,3,5,7,9) trigger paired yoke ROIs (12,14,16,18,20). Yoke ROIs never stimulate on their own.",
-                "default": False,
-            },
         ],
     }
 
     _HardwareInterfaceClass = OptoMotor
-
-    # Only these ROIs are tracked/recorded when this stimulator is selected.
-    # This prevents unnecessary tracking of the other 10 wells.
-    _tracked_roi_ids: set[int] = {
-        ### focal ###
-        1,
-        3,
-        5,
-        7,
-        9,
-        ### yoke ###
-        12,
-        14,
-        16,
-        18,
-        20,
-    }
-
-    # Yoking pairs: focal ROI (key) -> yoke ROI (value)
-    _yoke_pairs = {
-        1: 12,
-        3: 14,
-        5: 16,
-        7: 18,
-        9: 20,
-    }
 
     # Motors on odd channels (same as mAGO)
     _roi_to_channel_motor = {
@@ -429,7 +397,6 @@ class OptomotorSleepDepriver(SleepDepStimulator):
         pulse_off_ms=100,
         pulse_cycles=5,
         stimulus_probability=1.0,
-        yoking_enabled=False,
         date_range="",
         roi_template_config=None,
     ):
@@ -439,7 +406,6 @@ class OptomotorSleepDepriver(SleepDepStimulator):
         self._pulse_on_ms = int(pulse_on_ms)
         self._pulse_off_ms = int(pulse_off_ms)
         self._pulse_cycles = int(pulse_cycles)
-        self._yoking_enabled = bool(yoking_enabled)
 
         super().__init__(
             hardware_connection,
@@ -459,54 +425,17 @@ class OptomotorSleepDepriver(SleepDepStimulator):
         self._pulse_duration = pulse_duration
 
     def _decide(self):
-        roi_id = self._tracker._roi.idx
-
-        # When yoking is enabled, yoke ROIs never trigger on their own
-        if self._yoking_enabled and roi_id in self._yoke_pairs.values():
-            logging.info(
-                f"[Yoke enabled] ROI {roi_id} will not self-trigger. Skipping..."
-            )
-            return HasInteractedVariable(0), {}
-
-        # stimulation type, hardware channel
         out, dic = super()._decide()
 
-        if dic.get("channel") is None:
-            raise KeyError(
-                f"ROI {roi_id} has no accompanying channel in Optomotor class."
-            )
-
-        logging.info(f"Trigger ROI {roi_id} on channel {dic.get('channel')}")
-        if self._stimulus_type == 3:
-            # Pulse train mode: pass W-command parameters
-            dic["on_ms"] = self._pulse_on_ms
-            dic["off_ms"] = self._pulse_off_ms
-            dic["cycles"] = self._pulse_cycles
-        else:
-            # Motor or simple LED pulse: use P command with duration
-            dic["duration"] = self._pulse_duration
-
-        # When yoking is enabled and a focal ROI triggers, also stimulate its paired yoke ROI
-        if self._yoking_enabled and roi_id in self._yoke_pairs and out == 1:
-            yoke_roi = self._yoke_pairs[roi_id]
-            yoke_channel = self._roi_to_channel.get(yoke_roi)
-
-            if yoke_channel is None:
-                raise KeyError(
-                    f"[Yoke enabled] Yoke ROI {yoke_roi} has no accompanying channel in Optomotor class."
-                )
-
-            yoke_dic = {"channel": yoke_channel}
-            logging.info(
-                f"[Yoke enabled] Trigger yoke ROI {yoke_roi} on channel {yoke_channel}"
-            )
+        if dic.get("channel") is not None:
             if self._stimulus_type == 3:
-                yoke_dic["on_ms"] = self._pulse_on_ms
-                yoke_dic["off_ms"] = self._pulse_off_ms
-                yoke_dic["cycles"] = self._pulse_cycles
+                # Pulse train mode: pass W-command parameters
+                dic["on_ms"] = self._pulse_on_ms
+                dic["off_ms"] = self._pulse_off_ms
+                dic["cycles"] = self._pulse_cycles
             else:
-                yoke_dic["duration"] = self._pulse_duration
-            self._deliver(**yoke_dic)
+                # Motor or simple LED pulse: use P command with duration
+                dic["duration"] = self._pulse_duration
 
         return out, dic
 
