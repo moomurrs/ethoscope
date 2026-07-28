@@ -351,6 +351,7 @@ class AdaptiveBGModel(BaseTracker):
         self._buff_fg_backup = None
         self._buff_fg_diff = None
         self._old_sum_fg = 0
+        self._buff_img = None  # cached pre-allocation, passed to others
 
         self._roi = roi
 
@@ -414,7 +415,19 @@ class AdaptiveBGModel(BaseTracker):
         if mask is None:
             mask = np.ones(img.shape, dtype=np.uint8) * 255
 
-        buff_img = img.copy()
+        # Check if pre-allocation exists
+        if (
+            self._buff_img is None
+            or self._buff_img.shape != img.shape
+            or self._buff_img.dtype != img.dtype
+        ):
+            # Create the pre-allocation
+            self._buff_img = np.empty(img.shape, dtype=img.dtype)
+
+        # Maintain local binding
+        buff_img = self._buff_img
+        # In-place: write img into the pre-allocated buffer.
+        np.copyto(buff_img, img)
 
         cv2.GaussianBlur(buff_img, (self.blur_rad, self.blur_rad), 1.2, buff_img)
 
