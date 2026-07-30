@@ -263,8 +263,6 @@ step_install_apt_packages() {
         python3-dev \
         libcap-dev \
         pkg-config \
-        python3-opencv \
-        python3-picamera2 \
         git wget curl lm-sensors btop
 
     print_info "Restarting network services to ensure DNS works..."
@@ -289,6 +287,7 @@ step_install_apt_packages() {
         python3-pip \
         python3-venv \
         python3-setuptools \
+        python3-opencv \
         python3-picamera2 \
         python3-usb \
         python3-protobuf
