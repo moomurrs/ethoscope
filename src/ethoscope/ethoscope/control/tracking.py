@@ -59,7 +59,6 @@ from ethoscope.utils.description import DescribedObject
 
 
 class ExperimentalInformation(DescribedObject):
-
     _description = {
         "overview": "Optional information about your experiment",
         "arguments": [
@@ -578,12 +577,10 @@ class ControlThread(Thread):
             return
 
         for key in list(self._option_dict.keys()):
-
             Class, kwargs = self._parse_one_user_option(key, data)
             # when no field is present in the JSON config, we get the default class
 
             if Class is None:
-
                 self._option_dict[key]["class"] = self._option_dict[key][
                     "possible_classes"
                 ][0]
@@ -625,7 +622,7 @@ class ControlThread(Thread):
             if frame is not None and (wall_time - self._last_img_write_time) >= 1.0:
                 cv2.imwrite(
                     self._info["last_drawn_img"],
-                    frame,
+                    frame.copy(),
                     [int(cv2.IMWRITE_JPEG_QUALITY), 50],
                 )
                 self._last_img_write_time = wall_time
@@ -689,16 +686,16 @@ class ControlThread(Thread):
             try:
                 stimulator = StimulatorClass(hardware_connection, **stimulator_kwargs)
                 logging.info(
-                    f"Successfully created stimulator {i+1}/{len(rois)}: {type(stimulator).__name__}"
+                    f"Successfully created stimulator {i + 1}/{len(rois)}: {type(stimulator).__name__}"
                 )
                 stimulators.append(stimulator)
             except Exception as e:
-                logging.error(f"Failed to create stimulator {i+1}/{len(rois)}: {e}")
+                logging.error(f"Failed to create stimulator {i + 1}/{len(rois)}: {e}")
                 # Fall back to DefaultStimulator
                 from ethoscope.stimulators.stimulators import DefaultStimulator
 
                 fallback_stimulator = DefaultStimulator(None)
-                logging.warning(f"Using DefaultStimulator fallback for ROI {i+1}")
+                logging.warning(f"Using DefaultStimulator fallback for ROI {i + 1}")
                 stimulators.append(fallback_stimulator)
 
         kwargs = self._monit_kwargs.copy()
@@ -706,7 +703,7 @@ class ControlThread(Thread):
 
         logging.info(f"Creating Monitor with {len(stimulators)} stimulators")
         for i, stimulator in enumerate(stimulators):
-            logging.info(f"Stimulator {i+1}: {type(stimulator).__name__}")
+            logging.info(f"Stimulator {i + 1}: {type(stimulator).__name__}")
 
         self._monit = Monitor(
             camera,
@@ -1533,7 +1530,6 @@ class ControlThread(Thread):
         """ """
         # We stop only if we are actually running - not when the thread simply dies
         if self.info["status"] in ["running", "starting", "initialising"]:
-
             self._info["status"] = "stopping"
             self._info["time"] = time.time()
 
