@@ -741,6 +741,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                     "AwbEnable": False,  # Disable auto-white balance (NoIR cameras)
                     "AfMode": 0,  # Manual focus mode
                     "LensPosition": 6.70,  # Fixed focus position
+                    "AeEnable": False,
                     # Prioritize exposure adjustments over gain to minimize noise artifacts
                     # that interfere with background subtraction tracking algorithms
                 }
