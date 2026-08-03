@@ -122,6 +122,26 @@ class TestDefaultStimulator(unittest.TestCase):
         self.assertEqual(bool(interact), False)
         self.assertEqual(result, {})
 
+    def test_get_stimulator_state_always_inactive(self):
+        """Test get_stimulator_state always returns 'inactive' regardless of date_range."""
+        stimulator = DefaultStimulator(self.mock_hardware)
+        self.assertEqual(stimulator.get_stimulator_state(), "inactive")
+
+        now = time.time()
+        start_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 3600))
+        end_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now + 3600))
+        active_date_range = f"{start_str} > {end_str}"
+
+        stimulator = DefaultStimulator(self.mock_hardware, date_range=active_date_range)
+        self.assertEqual(stimulator.get_stimulator_state(), "inactive")
+
+        past_start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 7200))
+        past_end = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 3600))
+        past_date_range = f"{past_start} > {past_end}"
+
+        stimulator = DefaultStimulator(self.mock_hardware, date_range=past_date_range)
+        self.assertEqual(stimulator.get_stimulator_state(), "inactive")
+
 
 class TestBaseStimulator(unittest.TestCase):
     """Test suite for BaseStimulator functionality."""
@@ -182,7 +202,11 @@ class TestBaseStimulator(unittest.TestCase):
 
     def test_get_stimulator_state_scheduled(self):
         """Test get_stimulator_state returns 'scheduled' when in range but not stimulating."""
-        # Create date range covering now
+
+        class NoOpStimulator(BaseStimulator):
+            def _decide(self):
+                return HasInteractedVariable(False), {}
+
         now = time.time()
         start_time = now - 3600
         end_time = now + 3600
@@ -191,7 +215,7 @@ class TestBaseStimulator(unittest.TestCase):
         end_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time))
         date_range = f"{start_str} > {end_str}"
 
-        stimulator = DefaultStimulator(self.mock_hardware, date_range=date_range)
+        stimulator = NoOpStimulator(self.mock_hardware, date_range=date_range)
 
         state = stimulator.get_stimulator_state()
         self.assertEqual(state, "scheduled")
