@@ -4,6 +4,7 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import closing
 
 import mysql.connector
 
@@ -1048,7 +1049,7 @@ class SQLiteDatabaseMetadataCache(BaseDatabaseMetadataCache):
             db_size = 0
 
         # Connect to SQLite database and get table information
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             cursor = conn.cursor()
 
             # Get list of tables (excluding sqlite_* system tables)
@@ -1151,7 +1152,7 @@ class SQLiteDatabaseMetadataCache(BaseDatabaseMetadataCache):
                 logging.warning(f"SQLite database path does not exist: {db_path}")
                 return None
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 cursor = conn.cursor()
 
                 # Get date_time from METADATA table
@@ -1531,7 +1532,7 @@ class DatabasesInfo:
                                 db_path = os.path.join(root, file)
                                 try:
                                     # Quick check if this is a valid SQLite database
-                                    with sqlite3.connect(db_path, timeout=5.0) as conn:
+                                    with closing(sqlite3.connect(db_path, timeout=5.0)) as conn:
                                         cursor = conn.cursor()
                                         cursor.execute(
                                             "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1"
