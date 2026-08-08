@@ -181,17 +181,18 @@ class TestTargetROIBuilder(unittest.TestCase):
         # (Note: only stored if detection failed completely, but we test the mechanism works)
 
         # Create a second test with no detectable targets to ensure frame storage
-        # Create a blank image that won't have detectable targets
-        blank_img = np.zeros((480, 640, 3), dtype=np.uint8)
+        # Create a uniform gray image that won't have detectable targets
+        # (non-black so the median-brightness normalization has no divide by zero)
+        featureless_img = np.full((480, 640, 3), 128, dtype=np.uint8)
 
         # This should fail and store the frame
-        roi_builder._find_target_coordinates(blank_img)
+        roi_builder._find_target_coordinates(featureless_img)
 
         # Now previous frame should be set
         self.assertIsNotNone(roi_builder._previous_frame)
 
         # Test that subsequent detection with frame averaging doesn't crash
-        roi_builder._find_target_coordinates(blank_img)
+        roi_builder._find_target_coordinates(featureless_img)
 
         # Should complete without errors
         self.assertTrue(True, "Frame averaging completed without exceptions")
@@ -367,11 +368,23 @@ class TestTargetROIBuilder(unittest.TestCase):
 
     def test_rois_from_img_with_failed_detection(self):
         """Test _rois_from_img handles failed target detection gracefully"""
-        # Create a blank image that won't have detectable targets
-        blank_img = np.zeros((480, 640, 3), dtype=np.uint8)
+        # Create a uniform gray image that won't have detectable targets
+        # (non-black so the median-brightness normalization has no divide by zero)
+        featureless_img = np.full((480, 640, 3), 128, dtype=np.uint8)
 
         # Should return None, None for failed detection
-        reference_points, rois = self.roi_builder_basic._rois_from_img(blank_img)
+        reference_points, rois = self.roi_builder_basic._rois_from_img(featureless_img)
+
+        self.assertIsNone(reference_points, "Should return None for failed detection")
+        self.assertIsNone(rois, "Should return None for failed ROI generation")
+
+    def test_rois_from_img_with_black_frame_fails(self):
+        """Black frame should fail detection gracefully (median=0 edge case)."""
+        black_img = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        # Median is 0, which triggers the known divide-by-zero normalization warning
+        with self.assertWarns(RuntimeWarning):
+            reference_points, rois = self.roi_builder_basic._rois_from_img(black_img)
 
         self.assertIsNone(reference_points, "Should return None for failed detection")
         self.assertIsNone(rois, "Should return None for failed ROI generation")
@@ -412,4 +425,5 @@ class TestTargetROIBuilder(unittest.TestCase):
         self.test_validation_zero_dimensions()
         self.test_validation_extreme_aspect_ratios()
         self.test_rois_from_img_with_failed_detection()
+        self.test_rois_from_img_with_black_frame_fails()
         self.test_diagnostics_save_success_images()
