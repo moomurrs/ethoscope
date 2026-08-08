@@ -7,37 +7,44 @@ This directory contains the core ethoscope package that runs on individual ethos
 The Ethoscope is a platform for high-throughput ethomics - the study of animal behavior. This package provides the core APIs, tracking algorithms, and device interfaces that power individual Ethoscope units.
 
 **Key Features:**
+
 - Real-time video tracking and analysis
-- Modular stimulator and sensor interfaces  
+- Modular stimulator and sensor interfaces
 - Data logging and experiment management
 - Integration with the broader Ethoscope ecosystem
 
 ## Prerequisites
 
-- Python 3.7+ with pip
+- Python 3.12+ with pip
 - OpenCV dependencies (for video processing)
 - Hardware-specific dependencies (camera, GPIO, etc.)
 
 ## Installation
 
 ### Quick Installation (Recommended)
+
 ```bash
 make install
 ```
 
 ### Development Installation
+
 For development with editable package:
+
 ```bash
 make install-dev
 ```
 
 ### Production Installation
+
 For production deployment on devices:
+
 ```bash
 make install-production
 ```
 
 ### Manual Installation
+
 ```bash
 # Install with all device dependencies
 pip install .[device]
@@ -50,16 +57,19 @@ pip install .
 ```
 
 ### Legacy Installation
+
 The original installation method (still supported):
+
 ```bash
 sudo python setup.py develop
 ```
 
-*Note: You do not need to reinstall the package every time you make changes to Python code when using editable installs.*
+_Note: You do not need to reinstall the package every time you make changes to Python code when using editable installs._
 
 ## Package Structure
 
 ### Core Components
+
 - **`ethoscope.core`** - Fundamental tracking and monitoring classes
 - **`ethoscope.trackers`** - Computer vision tracking algorithms
 - **`ethoscope.roi_builders`** - Region of Interest detection and management
@@ -67,11 +77,13 @@ sudo python setup.py develop
 - **`ethoscope.hardware`** - Camera and interface abstractions
 
 ### Device Scripts
+
 - **`device_server.py`** - Main device server for web interface and control
 - **`device_listener.py`** - Network discovery and registration
 - **`ethoclient.py`** - Command-line client for device interaction
 
 ### Testing Framework
+
 - **Unit tests** - Component-level testing
 - **Integration tests** - End-to-end API testing
 - **Static test files** - Sample videos and images for testing
@@ -79,10 +91,12 @@ sudo python setup.py develop
 ## Dependencies
 
 ### Core Dependencies (always installed)
+
 - `numpy>=1.6.1` - Numerical computations
 - `scipy>=0.15.1` - Scientific computing
 
 ### Device Dependencies (install with `[device]`)
+
 - `opencv-python>=4.0.0` - Computer vision and video processing
 - `picamera>=1.8` - Raspberry Pi camera interface
 - `cherrypy>=3.6.0` - Web server framework
@@ -92,6 +106,7 @@ sudo python setup.py develop
 - `GitPython>=1.0.1` - Git integration for updates
 
 ### Development Dependencies (install with `[dev]`)
+
 - `pytest>=6.0.0` - Testing framework
 - `pytest-cov>=2.10.0` - Coverage reporting
 - `Sphinx>=1.4.4` - Documentation generation
@@ -100,6 +115,7 @@ sudo python setup.py develop
 ## Usage
 
 ### Running the Device Server
+
 ```bash
 # Using installed script
 device_server
@@ -109,15 +125,17 @@ python scripts/device_server.py
 ```
 
 ### Command-line Client
+
 ```bash
 # Using installed command
 ethoclient --help
 
-# Or directly  
+# Or directly
 python scripts/ethoclient.py --help
 ```
 
 ### Development and Testing
+
 ```bash
 # Run all tests
 make test
@@ -173,18 +191,21 @@ src/
 ## Troubleshooting
 
 ### Installation Issues
-- Ensure Python 3.7+ is installed: `python --version`
+
+- Ensure Python 3.12+ is installed: `python --version`
 - Install system dependencies for OpenCV: camera drivers, etc.
 - Check hardware permissions (camera, GPIO access)
 - Verify pip version: `pip --version`
 
 ### Runtime Issues
+
 - Check device permissions and hardware connections
 - Verify network connectivity for node communication
 - Review logs: `journalctl -u ethoscope_device.service`
 - Test hardware with integration tests
 
 ### Development Issues
+
 - Use `pip install -e .[device,dev]` for development
 - Run tests frequently: `make test`
 - Check import errors with simple import test
@@ -201,6 +222,6 @@ src/
 ## More Information
 
 - **Homepage**: https://github.com/gilestrolab/ethoscope
-- **Documentation**: http://lab.gilest.ro/ethoscope  
+- **Documentation**: http://lab.gilest.ro/ethoscope
 - **Manual**: https://lab.gilest.ro/ethoscope-manual
 - **License**: GPL-3.0

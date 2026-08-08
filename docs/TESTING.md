@@ -177,25 +177,25 @@ from ethoscope.component import ComponentToTest
 
 class TestComponentToTest:
     """Test class for ComponentToTest."""
-    
+
     def test_basic_functionality(self):
         """Test basic functionality works correctly."""
         component = ComponentToTest()
         result = component.do_something()
         assert result == expected_value
-    
+
     def test_edge_case(self):
         """Test edge case handling."""
         component = ComponentToTest()
         with pytest.raises(ValueError):
             component.do_something_invalid()
-    
+
     @pytest.mark.slow
     def test_performance_intensive(self):
         """Test that takes a long time to run."""
         # Mark slow tests for optional exclusion
         pass
-    
+
     @pytest.mark.integration
     def test_integration_with_other_component(self):
         """Test integration with other components."""
@@ -255,12 +255,14 @@ Test individual functions, methods, and classes in isolation.
 **Location**: `tests/unit/` or `tests/unittests/`
 
 **Characteristics**:
+
 - Fast execution (< 1 second per test)
 - No external dependencies
 - High coverage of edge cases
 - Mock all dependencies
 
 **Example**:
+
 ```python
 def test_calculate_distance():
     """Test distance calculation function."""
@@ -277,12 +279,14 @@ Test interactions between components and external systems.
 **Location**: `tests/integration/` or `tests/integration_api_tests/`
 
 **Characteristics**:
+
 - Test component interactions
 - May use real databases or services
 - Moderate execution time
 - Test data flows
 
 **Example**:
+
 ```python
 def test_device_scanner_integration():
     """Test device scanner with real network."""
@@ -298,12 +302,14 @@ Test complete workflows and user scenarios.
 **Location**: `tests/functional/`
 
 **Characteristics**:
+
 - End-to-end testing
 - User-focused scenarios
 - Longer execution time
 - Real or realistic data
 
 **Example**:
+
 ```python
 def test_complete_experiment_workflow():
     """Test complete experiment from start to finish."""
@@ -335,6 +341,7 @@ pytest --cov=ethoscope --cov-report=html --cov-report=xml --cov-report=term-miss
 ### Coverage Thresholds
 
 The project aims for:
+
 - **Overall coverage**: 70%
 - **Unit tests**: 85%
 - **Integration tests**: 60%
@@ -359,23 +366,23 @@ name: Tests
 on: [push, pull_request]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.8
-    - name: Install dependencies
-      run: |
-        pip install -r test-requirements.txt
-        pip install -e src/ethoscope/
-        pip install -e src/node/
-    - name: Run tests
-      run: python run_tests.py --coverage
-    - name: Upload coverage
-      uses: codecov/codecov-action@v1
+    test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - name: Set up Python
+              uses: actions/setup-python@v2
+              with:
+                  python-version: 3.12
+            - name: Install dependencies
+              run: |
+                  pip install -r test-requirements.txt
+                  pip install -e src/ethoscope/
+                  pip install -e src/node/
+            - name: Run tests
+              run: python run_tests.py --coverage
+            - name: Upload coverage
+              uses: codecov/codecov-action@v1
 ```
 
 ### Pre-commit Hooks

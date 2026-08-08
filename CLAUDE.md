@@ -15,9 +15,11 @@ The Ethoscope is a platform for high-throughput ethomics (automated behavioral m
 The codebase is organized into three main packages:
 
 ### 1. Device Package (`src/ethoscope/`)
+
 Core tracking and monitoring functionality for individual Ethoscope devices.
 
 **Key components:**
+
 - `ethoscope.core.monitor.Monitor` - Main orchestrator that coordinates tracking pipeline
 - `ethoscope.trackers.adaptive_bg_tracker.AdaptiveBGTracker` - Primary tracking algorithm using adaptive background subtraction
 - `ethoscope.hardware.input.cameras` - Camera interfaces (PiCamera, OpenCV)
@@ -26,9 +28,11 @@ Core tracking and monitoring functionality for individual Ethoscope devices.
 - `scripts/device_server.py` - Main device web server (runs on port 9000)
 
 ### 2. Node Package (`src/node/`)
+
 Central server for managing multiple Ethoscope devices and data collection.
 
 **Key components:**
+
 - `scripts/server.py` - Main node web server (runs on port 80 - APIs are in `src/node/ethoscope_node/api`)
 - `ethoscope_node.utils.device_scanner` - Device discovery and monitoring
 - `ethoscope_node.utils.backups_helpers` - Data synchronization and backup
@@ -36,6 +40,7 @@ Central server for managing multiple Ethoscope devices and data collection.
 - Frontend: Angular.js SPA in `static/` directory (source-only, no build step)
 
 ### 3. Update System (`src/updater/`)
+
 Handles software updates for both devices and nodes via git-based distribution.
 
 ## Package Independence Policy
@@ -46,9 +51,9 @@ Handles software updates for both devices and nodes via git-based distribution.
 
 1. **No Cross-Package Imports**: Code in `ethoscope` package must not import from `ethoscope_node` package, and vice versa.
 2. **Shared Utilities**: If functionality needs to be shared between packages:
-   - **Option 1**: Duplicate the code in both packages (preferred for small utilities)
-   - **Option 2**: Extract to a separate shared utilities package
-   - **Option 3**: Declare formal dependency in `pyproject.toml` (only if absolutely necessary)
+    - **Option 1**: Duplicate the code in both packages (preferred for small utilities)
+    - **Option 2**: Extract to a separate shared utilities package
+    - **Option 3**: Declare formal dependency in `pyproject.toml` (only if absolutely necessary)
 
 ### Rationale
 
@@ -60,6 +65,7 @@ Handles software updates for both devices and nodes via git-based distribution.
 ### Enforcement
 
 Cross-package imports are detected and blocked by:
+
 - **Pre-commit Hook**: `validate-cross-package-imports` runs on every commit
 - **Import Check Hook**: `python-import-check` validates all imports can resolve
 
@@ -72,6 +78,7 @@ The `list_local_video_files()` function was originally in `ethoscope.utils.video
 ## Development Commands
 
 ### Device Package (src/ethoscope/)
+
 ```bash
 # Install with device dependencies (recommended)
 make install
@@ -97,6 +104,7 @@ make clean
 ```
 
 ### Node Package (src/node/)
+
 ```bash
 # Install Python backend
 make install-all
@@ -116,12 +124,14 @@ make clean
 The project has a comprehensive testing infrastructure with standardized structure across both packages:
 
 **Test Structure:**
+
 - **Device Package**: `src/ethoscope/ethoscope/tests/` (unit, integration, fixtures)
 - **Node Package**: `src/node/tests/` (unit, integration, functional, fixtures)
 - **Central Test Requirements**: `test-requirements.txt` with all testing dependencies
 - **Documentation**: `TESTING.md` with comprehensive guidelines
 
 **Running Tests:**
+
 ```bash
 # Project-wide test runner
 python run_tests.py                    # Run all tests
@@ -146,24 +156,28 @@ make test-functional   # Functional tests only
 ```
 
 **Test Categories:**
+
 - **Unit Tests**: Fast, isolated component tests with mocked dependencies
 - **Integration Tests**: Component interaction tests with realistic scenarios
 - **Functional Tests**: End-to-end workflow tests (node package only)
 - **Hardware Tests**: Real hardware integration tests (marked with `@pytest.mark.hardware`)
 
 **Mock Objects & Fixtures:**
+
 - **Hardware Mocks**: Complete camera, stimulator, sensor, GPIO, and serial port implementations
 - **Device Mocks**: Ethoscope device fleet simulation with network discovery
 - **Database Mocks**: SQLite and generic database mocking with test data
 - **Test Fixtures**: Comprehensive fixtures in `conftest.py` for both packages
 
 **Coverage & Quality:**
+
 - **Coverage Targets**: 70% overall, 85% unit tests, 90% critical components
 - **Reports**: HTML, XML, and terminal coverage reports
 - **Quality Checks**: Integrated flake8, mypy, and bandit security scanning
 - **CI/CD Ready**: Standardized structure compatible with automated testing
 
 **Best Practices:**
+
 - Always write tests when adding new functionality
 - Use appropriate test types (unit for components, integration for interactions)
 - Mock external dependencies (hardware, network, databases)
@@ -177,12 +191,14 @@ The system uses systemd services for deployment, all find in `/services`.
 These can be reinstalled using `accessories/upgrade_scripts/install_services.sh`
 
 On the ethoscope:
+
 - `ethoscope_device.service` - WEB facing API / interacts with listener through a socket
 - `ethoscope_listener.service` - Main device tracking/recording service
 - `ethoscope_update.service` - Software update management for the ethoscope
 - `ethoscope_GPIO_listener.service` - Listens to buttons connected to the PI GPIO and associates actions
 
 On the node:
+
 - `ethoscope_node.service` - Central node management server
 - `ethoscope_backup_node.service` - Central node backup management server
 - `ethoscope_backup_mysql.service` - Data backup for mariadbdata
@@ -225,12 +241,14 @@ The icon appears in the top-right status area, near the hard drive and response 
 ### Implementation Details
 
 **Backend** (`src/node/ethoscope_node/scanner/ethoscope_scanner.py`):
+
 - `check_ssh_key_installed()` - Tests passwordless SSH using BatchMode (line 1375)
 - `setup_ssh_authentication()` - Transfers public key using sshpass and ssh-copy-id (line 1314)
 - `_handle_device_coming_online()` - Auto-transfers keys with 10s stabilization delay (line 798)
 - Status tracked in `device._info["ssh_key_installed"]` field
 
 **Retry Behavior**:
+
 - If initial transfer fails, the system retries on the next device status change
 - No continuous retries to avoid excessive SSH connection attempts
 - Failures are logged for troubleshooting
@@ -250,6 +268,7 @@ ssh-copy-id -i /etc/ethoscope/keys/id_rsa.pub ethoscope@<device-ip>
 ### Troubleshooting
 
 **SSH key icon shows orange/red:**
+
 1. Check network connectivity to ethoscope device
 2. Verify ethoscope user password is "ethoscope"
 3. Check `/etc/ethoscope/keys/` exists on node with proper permissions
@@ -257,6 +276,7 @@ ssh-copy-id -i /etc/ethoscope/keys/id_rsa.pub ethoscope@<device-ip>
 5. Try manual SSH key transfer (see above)
 
 **Passwordless SSH not working despite green icon:**
+
 1. SSH status may be cached - wait for next device status change
 2. Check `/home/ethoscope/.ssh/authorized_keys` on ethoscope device
 3. Verify SSH daemon is running on ethoscope
@@ -276,7 +296,8 @@ ssh-copy-id -i /etc/ethoscope/keys/id_rsa.pub ethoscope@<device-ip>
 The project uses GitHub Actions for continuous integration and deployment:
 
 **Workflows:**
-- **CI Workflow** (`.github/workflows/ci.yml`): Runs tests across Python 3.8-3.12, generates coverage reports
+
+- **CI Workflow** (`.github/workflows/ci.yml`): Runs tests across Python 3.12-3.14, generates coverage reports
 - **Code Quality** (`.github/workflows/quality.yml`): Linting, type checking, security scanning
 - **Release** (`.github/workflows/release.yml`): Automated releases from version tags
 
@@ -289,6 +310,7 @@ The project uses GitHub Actions for continuous integration and deployment:
 The project uses pre-commit hooks to enforce code quality standards locally before pushing to GitHub.
 
 **Installation:**
+
 ```bash
 # Activate your venv first
 source .venv/bin/activate
@@ -299,6 +321,7 @@ pre-commit install
 ```
 
 **Hooks Included:**
+
 - **Formatting**: black, isort
 - **Linting**: flake8, ruff
 - **Security**: bandit, detect-secrets
@@ -306,6 +329,7 @@ pre-commit install
 - **Custom checks**: Python syntax, import validation
 
 **Usage:**
+
 ```bash
 # Runs automatically on git commit
 git commit -m "Your message"
@@ -321,6 +345,7 @@ git commit --no-verify
 ```
 
 **Manual-only hooks** (run with `--hook-stage manual`):
+
 - `python-import-check`: Verify imports work in venv
 - `critical-tests`: Run tests for critical file changes
 - `update-copyright`: Update copyright years
@@ -339,20 +364,20 @@ git commit --no-verify
 The system supports multiple result writer backends for storing tracking data:
 
 1. **SQLiteResultWriter** (Default, Recommended)
-   - Stores data in local SQLite databases
-   - No additional setup required
-   - Backed up via rsync to node server
-   - Best performance and reliability
+    - Stores data in local SQLite databases
+    - No additional setup required
+    - Backed up via rsync to node server
+    - Best performance and reliability
 
 2. **MySQLResultWriter** (Optional, Hidden by Default)
-   - Stores data in MariaDB/MySQL database server
-   - Requires manual configuration and service setup
-   - Hidden from web UI by default (since v1.5)
-   - Enable only if you have specific need for centralized database
+    - Stores data in MariaDB/MySQL database server
+    - Requires manual configuration and service setup
+    - Hidden from web UI by default (since v1.5)
+    - Enable only if you have specific need for centralized database
 
 3. **dbAppender**
-   - Appends data to existing database
-   - Used for resuming interrupted experiments
+    - Appends data to existing database
+    - Used for resuming interrupted experiments
 
 ### Enabling MySQL/MariaDB Result Writer
 
@@ -364,9 +389,9 @@ Edit `/etc/ethoscope/ethoscope.conf` and set:
 
 ```json
 {
-  "device_options": {
-    "enable_mysql_result_writer": true
-  }
+    "device_options": {
+        "enable_mysql_result_writer": true
+    }
 }
 ```
 
@@ -395,6 +420,7 @@ Open the ethoscope detail page and start tracking. MySQLResultWriter should now 
 ### MariaDB Credentials
 
 If using MySQLResultWriter, the default credentials are:
+
 - **Database**: `{machine_name}_db`
 - **User**: `ethoscope`
 - **Password**: `ethoscope`
@@ -410,11 +436,12 @@ If using MySQLResultWriter, the default credentials are:
 
 ## Important Notes
 
-- Python 3.7+ required for device package, 3.8+ for node package
+- Python 3.12+ required for device package, 3.12+ for node package
 - OpenCV is used extensively for computer vision operations
 - CherryPy/Bottle used for web servers
 - Frontend uses Angular.js (legacy version, source-only)
 - System designed for Raspberry Pi deployment but works on other Linux systems
 
 ## See also
+
 @CLAUDE.local.md

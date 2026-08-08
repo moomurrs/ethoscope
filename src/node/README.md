@@ -4,25 +4,30 @@ This directory contains the complete Ethoscope node server - both the Python bac
 
 ## Prerequisites
 
-- Python 3.7+ with pip
-- Node.js (version 14 or higher) 
+- Python 3.12+ with pip
+- Node.js (version 14 or higher)
 - npm (comes with Node.js)
 
 ## Installation
 
 ### Complete Installation (Recommended)
+
 Install both backend and frontend in one command:
+
 ```bash
 make install-all
 ```
 
 ### Development Installation
+
 For development with editable Python package:
+
 ```bash
 make install-dev
 ```
 
 ### Manual Installation
+
 ```bash
 # Install Python backend
 pip install .                    # Production
@@ -35,17 +40,21 @@ npm run build
 ```
 
 ### Legacy Installation
+
 The original installation method (still supported):
+
 ```bash
 sudo python setup.py develop
 ```
 
-*Note: You do not need to reinstall the Python package every time you make changes to Python code when using editable installs.*
+_Note: You do not need to reinstall the Python package every time you make changes to Python code when using editable installs._
 
 ## Development
 
 ### File Watching Mode
+
 For development with automatic rebuilds when files change:
+
 ```bash
 make dev
 # OR
@@ -53,6 +62,7 @@ npm run dev
 ```
 
 ### Production Build
+
 ```bash
 make build
 # OR
@@ -77,10 +87,10 @@ The build system uses Babel to transpile modern JavaScript (ES6+) to browser-com
 
 1. **Source vs Built Files**: The browser loads files from `static/dist/js/`, not the source files in `static/js/controllers/`. Always run `npm run build` after making changes to source files.
 
-2. **Development Workflow**: 
-   - Edit source files in `static/js/controllers/`
-   - Run `npm run build` or `npm run dev` to transpile
-   - Browser loads transpiled files from `static/dist/js/`
+2. **Development Workflow**:
+    - Edit source files in `static/js/controllers/`
+    - Run `npm run build` or `npm run dev` to transpile
+    - Browser loads transpiled files from `static/dist/js/`
 
 3. **Deployment**: In production, ensure the build step is run as part of the deployment process.
 
@@ -93,7 +103,9 @@ For new node installations, ensure the following steps are included:
 3. Ensure the ethoscope node service can access the built files
 
 ### Production Deployment
+
 For production environments:
+
 ```bash
 cd /opt/ethoscope-git/node_src
 make install-production
@@ -132,18 +144,21 @@ node_src/
 ## Troubleshooting
 
 ### Build Issues
+
 - Ensure Node.js and npm are installed: `node --version && npm --version`
 - Run `npm install` to install dependencies
 - Check for syntax errors in source files
 - Verify permissions on output directory
 
 ### Browser Loading Issues
+
 - Verify files exist in `static/dist/js/`
 - Check browser developer tools for 404 errors
 - Ensure build process completed successfully
 - Check web server configuration serves static files correctly
 
 ### Development Issues
+
 - Use `npm run dev` for file watching during development
 - Check console output for Babel transpilation errors
 - Ensure source files use modern JavaScript syntax correctly

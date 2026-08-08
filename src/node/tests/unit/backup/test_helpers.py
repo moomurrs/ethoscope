@@ -720,7 +720,7 @@ class TestBackupClass:
         backup = BackupClass(device_info, results_dir)
         backup_path = backup._get_mariadb_backup_path()
 
-        # Should return first database's path (dict ordering is preserved in Python 3.7+)
+        # Should return first database's path (dict ordering is preserved in Python 3.12+)
         # The path will be one of the databases, constructed from results_dir + path
         assert "device" in backup_path
         assert backup_path.startswith(results_dir)
