@@ -75,6 +75,34 @@ The `list_local_video_files()` function was originally in `ethoscope.utils.video
 
 **Location**: `src/node/ethoscope_node/utils/video_helpers.py:15`
 
+## Local Development Environment
+
+Development tools are installed in the local virtualenv at `.venv/` and are NOT
+on the system PATH. Either activate the venv or use full paths:
+
+```bash
+# Option A: activate the venv, then use bare names
+source .venv/bin/activate
+ruff check src/
+basedpyright src/
+
+# Option B: full path, no activation needed
+.venv/bin/ruff check src/
+.venv/bin/basedpyright src/
+```
+
+### Verification (required after edits)
+
+After making changes to Python files, verify your edits pass:
+
+```bash
+.venv/bin/ruff check <changed files>
+.venv/bin/basedpyright <changed files>
+- Run these after any Python edit before considering the task done
+- Use the explicit .venv/bin/ paths (activation is optional if you prefer)
+- Fix all reported issues; re-run until clean
+```
+
 ## Development Commands
 
 ### Device Package (src/ethoscope/)

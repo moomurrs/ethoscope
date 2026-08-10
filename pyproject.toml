@@ -1,29 +1,10 @@
 # Root level pyproject.toml for the entire Ethoscope project
 
-[tool.black]
-line-length = 88
-target-version = ['py311', 'py312', 'py313']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  # directories
-  \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-  | htmlcov
-)/
-'''
+
 
 [tool.ruff]
-line-length = 88
-target-version = "py311"
+line-length = 120
+target-version = "py312"
 exclude = [
     ".bzr",
     ".direnv",
@@ -50,14 +31,30 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-select = [
-    "E",  # pycodestyle errors
-    "W",  # pycodestyle warnings
-    "F",  # pyflakes
-    "I",  # isort
-    "B",  # flake8-bugbear
-    "C4", # flake8-comprehensions
-    "UP", # pyupgrade
+# Add to Ruff's defaults instead of replacing them entirely
+extend-select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort (import sorting)
+    "B",      # flake8-bugbear (common bug patterns)
+    "F",      # Better usage of built-in logging
+    "C4",     # flake8-comprehensions (use comprehensions instead of filter/map)
+    "UP",     # pyupgrade (modernize syntax for target Python version)
+    "SIM",    # flake8-simplify (simplify redundant constructs)
+    "ISC",    # Good use of string concatenation (explicit + for string concatenation)
+    "RET",    # Good return practices (consistent/unnecessary return statements)
+    "RUF",    # Ruff-specific rules (catch-all for Ruff's own lints)
+    "PTH",    # pathlib (prefer pathlib over os.path)
+    "PL",     # Pylint (rules ported from Pylint)
+    "FURB",   # refurb (modernization and simplification suggestions)
+    "ASYNC",  # flake8-async (correct asyncio patterns)
+    "NPY",    # NumPy-specific rules (numpy deprecations, etc.)
+    "TCH",    # (flake8-type-checking) moves type-only imports into TYPE_CHECKING blocks
+    "YTT",    # (flake8-2020) flags datetime.utcnow()/utcfromtimestamp() deprecations
+    "PT",     # (flake8-pytest-style) standardizes fixture usage and pytest.raises patterns
+    "PERF",   # (perflint) flags perf issues (e.g., manual iteration vs max()/min(), dict.get patterns)
+    "TRY",    # (tryceratops) enforces good exception handling (raise/return in except)
 ]
 ignore = [
     "E501",  # line too long, handled by black
