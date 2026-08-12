@@ -3,7 +3,7 @@
 
 
 [tool.ruff]
-line-length = 120
+line-length = 88
 target-version = "py312"
 exclude = [
     ".bzr",
@@ -56,11 +56,11 @@ extend-select = [
     "PERF",   # (perflint) flags perf issues (e.g., manual iteration vs max()/min(), dict.get patterns)
     "TRY",    # (tryceratops) enforces good exception handling (raise/return in except)
 ]
-ignore = [
-    "E501",  # line too long, handled by black
-    "B008",  # do not perform function calls in argument defaults
-    "C901",  # too complex
-]
+#ignore = [
+#    "E501",  # line too long, handled by black
+#    "B008",  # do not perform function calls in argument defaults
+#    "C901",  # too complex
+#]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Allow unused imports in __init__.py
