@@ -1,11 +1,10 @@
+# author: quentin
+# refactor: moomurrs
 """Typed integer variables for tracking data points.
 
 Each variable class subclasses :class:`int` so that values behave as plain
 integers while carrying the schema and semantic metadata consumed by the
 result writers (:mod:`ethoscope.io.base`).
-
-Author: quentin
-Refactor: moomurrs
 """
 
 from __future__ import annotations
