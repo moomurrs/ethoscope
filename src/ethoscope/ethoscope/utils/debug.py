@@ -1,38 +1,46 @@
-__author__ = "quentin"
+# author: quentin
+# refactor: moomurrs
+
+from typing import override
 
 import cv2
 import numpy as np
 
 
 class EthoscopeException(Exception):
+    """A custom exception that can store a debugging image.
 
-    def __init__(self, value, img=None):
-        """
-        A custom exception. It can store an image
+    Attributes:
+        value: The exception message.
+        img: An optional image snapshot attached to the exception, or None.
+    """
 
-        :param value: A value passed to the exception, generally a text message
-        :param img: an image
-        :type img: :class:`~numpy.ndarray`
-        :return:
+    value: str
+    img: np.ndarray | None
+
+    def __init__(self, value: str, img: np.ndarray | None = None) -> None:
+        """Create the exception, optionally attaching a copy of an image.
+
+        Args:
+            value: The exception message.
+            img: An image to attach. Non-array values are ignored.
         """
+        super().__init__(value)
         self.value = value
-        if isinstance(img, np.ndarray):
-            self.img = np.copy(img)
-        else:
-            self.img = None
+        self.img = np.copy(img) if isinstance(img, np.ndarray) else None
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
+        """Return the repr of the message for easy debugging."""
         return repr(self.value)
 
 
-def show(im, t=-1):
-    """
-    A function to simply display an image and wait. This is for debugging purposes only.
-    :param im: the image to show
-    :type im: :class:`~numpy.ndarray`
-    :param t: the time to wait, in ms. Lower than 1 means until user enter a key.
-    :type t: int
-    :return:
+def show(im: np.ndarray, t: int = -1) -> None:
+    """Display an image in a debug window and wait (debugging only).
+
+    Args:
+        im: The image to display.
+        t: Wait time in milliseconds; lower than 1 waits for a key press.
     """
     cv2.imshow("debug", im)
-    cv2.waitKey(t)
+    _ = cv2.waitKey(t)
