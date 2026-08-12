@@ -1,25 +1,54 @@
-__author__ = "quentin"
+# author: quentin
+# refactor: moomurrs
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class DescribedObject:
-    r"""
-    An object that contains a ``description`` attribute.
-    This is used to parse user option for the web interface.
-    This way, users can send option to the different objects used.
-    ``description`` is a dictionary with the fields "overview" and "arguments".
-    "overview" is simply a string. "arguments" is a list of dictionaries. Each has the field:
+    """Base class for objects exposing a web-interface-friendly description.
 
-     * name: The name of the argument as it is in "__init__"
-     * description: "A user friendly description of the argument"
-     * type: "number", "datetime", "daterange" and "string".
-     * min, max and step: only for type "number", defines the accepted limits of the arguments as well as the increment in the user interface
-     * default: the default value
+    The :pyattr:`description` attribute is a dictionary with the following keys:
 
-    Each argument must match a argument in `__init__`.
+    * ``overview`` (str): A short, user-friendly description of the object.
+    * ``arguments`` (list[dict[str, object]]): One entry per ``__init__``
+      parameter the web interface should expose. Each entry contains:
+
+        * ``name`` (str): The argument name as it appears in ``__init__``.
+        * ``description`` (str): A user-friendly description of the argument.
+        * ``type`` (str): One of ``"number"``, ``"datetime"``, ``"daterange"``,
+          ``"str"``, ``"select"`` or ``"boolean"``.
+        * ``min``, ``max``, ``step`` (number, optional): Only relevant when
+          ``type == "number"``. Define accepted limits and the UI increment.
+        * ``default``: The default value.
+        * ``hidden`` (bool, optional): When ``True``, hide the object from the
+          web UI.
+        * ``asknode``, ``required`` (optional): Node-side metadata.
+        * ``options`` (list[dict[str, str]], optional): Only relevant when
+          ``type == "select"``. Each entry maps a ``value`` to a display
+          ``label``.
+        * ``depends_on`` (dict[str, list[str]], optional): Values of other
+          arguments that must be selected for this argument to apply.
+
+    Every argument's ``name`` must correspond to a parameter of the subclass'
+    ``__init__``.
+
+    Subclasses set the description by assigning a dictionary to the
+    ``_description`` class attribute.
     """
 
-    _description = None
+    _description: ClassVar[Mapping[str, object] | None] = None
 
     @property
-    def description(self):
+    def description(self) -> Mapping[str, object] | None:
+        """Return the description dictionary for the web interface.
+
+        Returns:
+            The description dictionary, or ``None`` if the subclass did not
+            define one.
+        """
         return self._description
