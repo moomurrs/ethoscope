@@ -18,6 +18,7 @@ from multiprocessing import Queue
 from unittest.mock import Mock, patch
 
 from ethoscope.core.roi import ROI
+from ethoscope.core.variables import BaseIntVariable, SQLDataType
 from ethoscope.io.sqlite import AsyncSQLiteWriter, SQLiteResultWriter
 
 
@@ -442,21 +443,20 @@ class TestSQLiteResultWriter(unittest.TestCase):
         )
 
         # Create mock variable classes with different SQL types
-        from ethoscope.core.variables import BaseIntVariable
 
         class XVariable(BaseIntVariable):
             header_name = "x"
-            sql_data_type = "SMALLINT"
+            sql_data_type = SQLDataType.SMALLINT
             functional_type = "distance"
 
         class YVariable(BaseIntVariable):
             header_name = "y"
-            sql_data_type = "DOUBLE"
+            sql_data_type = SQLDataType.DOUBLE
             functional_type = "distance"
 
         class LabelVariable(BaseIntVariable):
             header_name = "label"
-            sql_data_type = "VARCHAR(100)"
+            sql_data_type = SQLDataType.VARCHAR100
             functional_type = "label"
 
         # Create data row matching the expected format

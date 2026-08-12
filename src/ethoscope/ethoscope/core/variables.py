@@ -1,158 +1,219 @@
-__author__ = "quentin"
+"""Typed integer variables for tracking data points.
+
+Each variable class subclasses :class:`int` so that values behave as plain
+integers while carrying the schema and semantic metadata consumed by the
+result writers (:mod:`ethoscope.io.base`).
+
+Author: quentin
+Refactor: moomurrs
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import TYPE_CHECKING, ClassVar, Self, override
+
+if TYPE_CHECKING:
+    from .roi import ROI
+
+
+type VariableValue = int | float
+
+
+class SQLDataType(StrEnum):
+    """SQL column types that variable classes may declare."""
+
+    SMALLINT = "SMALLINT"
+    BOOLEAN = "BOOLEAN"
+    INT = "INT"
+    DOUBLE = "DOUBLE"
+    VARCHAR100 = "VARCHAR(100)"
 
 
 class BaseIntVariable(int):
+    """Template class for defining typed integer variables.
+
+    Subclasses must define the three following attributes:
+
+    * ``sql_data_type``: the SQL data type used to store data points, so
+      they occupy minimal space. It must be one of the
+      :class:`~ethoscope.core.variables.SQLDataType` members.
+    * ``header_name``: the column name of this variable in result tables;
+      it must be unique.
+    * ``functional_type``: a keyword defining what kind of variable this is
+      (e.g. "distance", "angle" or "proba"), enabling per-functional-type
+      post-processing.
+
+    Incomplete definitions are rejected at class-definition time via
+    :meth:`__init_subclass__`. Abstract template classes (including
+    ``BaseIntVariable`` itself) declare ``_abstract = True``; all other
+    subclasses are treated as concrete and validated automatically.
     """
-    Template class for defining arbitrary variable types.
-    Each class derived from this one should at least define the three following attributes:
 
-    * `sql_data_type`, The MySQL data type. This allows to use minimal space to save data points.
-    * `header_name`, The name of this variable. this will be used as the column name in the result table, so it must be unique.
-    * `functional_type`, A keyword defining what type of variable this is. For instance "distance", "angle" or "proba". this allow specific post-processing per functional type.
-    """
+    _abstract: ClassVar[bool] = True
+    sql_data_type: SQLDataType = SQLDataType.SMALLINT
+    header_name: str = ""
+    functional_type: str = ""
 
-    sql_data_type = "SMALLINT"
-    header_name = None
-    functional_type = None  # {distance, angle, bool, confidence,...}
+    def __new__(cls, value: VariableValue) -> Self:
+        """Create a new variable instance.
 
-    def __new__(cls, value):
-        if cls.functional_type is None:
+        Args:
+            value: The numeric value held by this variable.
+
+        Raises:
+            NotImplementedError: If the class is abstract and cannot be
+                instantiated.
+
+        Returns:
+            A new variable instance.
+        """
+        if cls._is_abstract():
             raise NotImplementedError(
-                "Variables must have a functional data type such as 'distance', 'angle', 'bool', 'confidence'"
+                f"'{cls.__name__}' is abstract; it cannot be instantiated"
             )
-        if cls.sql_data_type is None:
+        return super().__new__(cls, value)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if cls._is_abstract():
+            return
+        cls._validate_definition()
+
+    @classmethod
+    def _is_abstract(cls) -> bool:
+        """Return whether the class was explicitly declared abstract.
+
+        Only a marker declared in the class's own namespace counts, so that
+        subclasses of abstract templates are treated as concrete.
+        """
+        return cls.__dict__.get("_abstract", False) is True
+
+    @classmethod
+    def _validate_definition(cls) -> None:
+        """Validate the required class attributes for a concrete type."""
+        if not cls.functional_type:
+            raise NotImplementedError(
+                "Variables must have a functional data type (e.g. 'distance', 'angle')"
+            )
+        if not cls.sql_data_type:
             raise NotImplementedError(
                 "Variables must have an SQL data type such as INT"
             )
-        if cls.header_name is None:
+        if not cls.header_name:
             raise NotImplementedError("Variables must have a header name")
-        return super().__new__(cls, value)
 
 
 class BaseBoolVariable(BaseIntVariable):
-    """
-    Abstract type encoding boolean values. Internally stored as int as bool type cannot be derived.
-    """
+    """Abstract type encoding boolean values as integers (0 or 1)."""
 
-    functional_type = "bool"
-    sql_data_type = "BOOLEAN"
+    _abstract: ClassVar[bool] = True
+    functional_type: str = "bool"
+    sql_data_type: SQLDataType = SQLDataType.BOOLEAN
 
 
 class IsInferredVariable(BaseBoolVariable):
-    """
-    Type encoding whether a data point is inferred (from past values) or observed; 0 or 1, respectively.
-    """
+    """Whether a data point is inferred (from past values) or observed; 1 or 0."""
 
-    header_name = "is_inferred"
+    header_name: str = "is_inferred"
 
 
 class PhiVariable(BaseIntVariable):
-    """
-    Type encoding the angle of a detected object, in degrees.
-    """
+    """The angle of a detected object, in degrees."""
 
-    header_name = "phi"
-    functional_type = "angle"
+    header_name: str = "phi"
+    functional_type: str = "angle"
 
 
 class Label(BaseIntVariable):
-    """
-    Type encoding a discrete label when several objects, in the same ROI, are detected.
-    """
+    """Discrete label identifying an object within a ROI."""
 
-    header_name = "label"
-    functional_type = "label"
+    header_name: str = "label"
+    functional_type: str = "label"
 
 
 class BaseDistanceIntVar(BaseIntVariable):
-    """
-    Abstract type encoding variables representing distances.
-    """
+    """Abstract type encoding variables representing distances."""
 
-    functional_type = "distance"
+    _abstract: ClassVar[bool] = True
+    functional_type: str = "distance"
 
 
 class mLogLik(BaseIntVariable):
-    """
-    Type representing a log likelihood. It should be multiplied by 1000 to be stored as an int.
+    """Type representing a log likelihood.
+
+    It should be multiplied by 1000 to be stored as an int.
     """
 
-    header_name = "mlog_L_x1000"
-    functional_type = "proba"
+    header_name: str = "mlog_L_x1000"
+    functional_type: str = "proba"
 
 
 class XYDistance(BaseIntVariable):
-    """
-    Type storing distance moved between two consecutive observations. Log10 x 1000 is used so that floating point distance is stored as an int.
+    """Distance moved between two consecutive observations.
+
+    Log10 x 1000 is used so that the floating point distance is stored as an int.
     """
 
-    header_name = "xy_dist_log10x1000"
-    functional_type = "relative_distance_1e6"
+    header_name: str = "xy_dist_log10x1000"
+    functional_type: str = "relative_distance_1e6"
 
 
 class WidthVariable(BaseDistanceIntVar):
-    """
-    Type storing the width of a detected object.
-    """
+    """The width of a detected object."""
 
-    header_name = "w"
+    header_name: str = "w"
 
 
 class HeightVariable(BaseDistanceIntVar):
-    """
-    Type storing the height of a detected object.
-    """
+    """The height of a detected object."""
 
-    header_name = "h"
+    header_name: str = "h"
 
 
 class BaseRelativeVariable(BaseDistanceIntVar):
-    """
-    Abstract type encoding distance variables that can be expressed relatively to an origin.
-    They converted to absolute using information form the ROI.
+    """Abstract type for distance variables expressed relative to an origin.
+
+    Relative variables are converted to absolute coordinates using
+    information from the ROI.
     """
 
-    def to_absolute(self, roi):
-        """
-        Converts a positional variable from a relative (to the top left of a ROI) to an absolute (e.i. top left of the parent image).
+    _abstract: ClassVar[bool] = True
 
-        :param roi: a region of interest
-        :type roi: :class:`~ethoscope.rois.roi_builders.ROI`.
-        :return: A new variable
-        :rtype: :class:`~ethoscope.core.variable.BaseRelativeVariable`
+    def to_absolute(self, roi: ROI) -> Self:
+        """Convert a relative position to absolute image coordinates.
+
+        Args:
+            roi: The region of interest the variable was measured in.
+
+        Returns:
+            A new variable expressed relative to the top left of the parent image.
         """
         return self._get_absolute_value(roi)
 
-    def _get_absolute_value(self, roi):
+    def _get_absolute_value(self, _roi: ROI) -> Self:
         raise NotImplementedError(
-            "Relative variable must implement a `get_absolute_value()` method"
+            "Relative variable must implement a `_get_absolute_value()` method"
         )
 
 
 class XPosVariable(BaseRelativeVariable):
-    """
-    Type storing the X position of a detected object.
-    """
+    """The X position of a detected object."""
 
-    header_name = "x"
+    header_name: str = "x"
 
-    def _get_absolute_value(self, roi):
-        out = int(self)
-
+    @override
+    def _get_absolute_value(self, roi: ROI) -> XPosVariable:
         ox, _ = roi.offset
-        out += ox
-        return XPosVariable(out)
+        return XPosVariable(int(self) + ox)
 
 
 class YPosVariable(BaseRelativeVariable):
-    """
-    Type storing the Y position of a detected object.
-    """
+    """The Y position of a detected object."""
 
-    header_name = "y"
+    header_name: str = "y"
 
-    def _get_absolute_value(self, roi):
-        out = int(self)
+    @override
+    def _get_absolute_value(self, roi: ROI) -> YPosVariable:
         _, oy = roi.offset
-        out += oy
-        return YPosVariable(out)
+        return YPosVariable(int(self) + oy)

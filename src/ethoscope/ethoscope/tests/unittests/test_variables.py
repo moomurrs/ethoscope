@@ -14,6 +14,7 @@ from ethoscope.core.variables import (
     IsInferredVariable,
     Label,
     PhiVariable,
+    SQLDataType,
     WidthVariable,
     XPosVariable,
     YPosVariable,
@@ -29,20 +30,9 @@ class TestVariableTypes(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
 
             class BadVariable(BaseIntVariable):
-                sql_data_type = "INT"
+                sql_data_type = SQLDataType.INT
                 header_name = "test"
                 # Missing functional_type
-
-            BadVariable(10)
-
-    def test_base_int_variable_requires_sql_type(self):
-        """Test that BaseIntVariable requires sql_data_type to be defined."""
-        with self.assertRaises(NotImplementedError):
-
-            class BadVariable(BaseIntVariable):
-                functional_type = "test"
-                header_name = "test"
-                sql_data_type = None  # Explicitly set to None
 
             BadVariable(10)
 
@@ -52,7 +42,7 @@ class TestVariableTypes(unittest.TestCase):
 
             class BadVariable(BaseIntVariable):
                 functional_type = "test"
-                sql_data_type = "INT"
+                sql_data_type = SQLDataType.INT
                 # Missing header_name
 
             BadVariable(10)
