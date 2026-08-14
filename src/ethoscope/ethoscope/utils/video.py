@@ -11,7 +11,7 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 type VideoInfo = dict[str, str]
 type VideoIndex = dict[str, VideoInfo]
@@ -39,7 +39,7 @@ def _iter_video_files(rootdir: str | Path) -> Iterator[Path]:
             if path.is_file() and path.suffix in _VIDEO_SUFFIXES:
                 yield path
         except OSError as exc:
-            logger.warning("Skipping unreadable path %s: %s", path, exc)
+            _LOGGER.warning("Skipping unreadable path %s: %s", path, exc)
 
 
 def list_local_video_files(
@@ -68,7 +68,7 @@ def list_local_video_files(
     for path in _iter_video_files(rootdir):
         filename = path.name
         if filename in result:
-            logger.warning(
+            _LOGGER.warning(
                 "Duplicate video filename '%s' (already indexed from %s); overwriting.",
                 filename,
                 result[filename]["path"],
@@ -102,12 +102,14 @@ def ensure_video_directory_structure(
         try:
             _ = shutil.move(str(legacy_results_dir), str(videos_path))
         except OSError:
-            logger.exception("Failed to move %s to %s", legacy_results_dir, videos_path)
+            _LOGGER.exception(
+                "Failed to move %s to %s", legacy_results_dir, videos_path
+            )
         else:
-            logger.info("Migrated %s to %s", legacy_results_dir, videos_path)
+            _LOGGER.info("Migrated %s to %s", legacy_results_dir, videos_path)
 
     if not videos_path.exists():
         videos_path.mkdir(parents=True, exist_ok=True)
-        logger.info("Created videos directory: %s", videos_path)
+        _LOGGER.info("Created videos directory: %s", videos_path)
 
     return str(videos_path)

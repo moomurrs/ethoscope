@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 type DateRange = tuple[float, float]
 
@@ -260,7 +260,7 @@ class DailyScheduler:
         self._start_time_seconds: int = self._parse_time_string(daily_start_time)
         self._state: dict[str, object] = self._load_state() if state_file_path else {}
 
-        logger.info(
+        _LOGGER.info(
             "DailyScheduler initialized: %sh active every %sh starting at %s",
             daily_duration_hours,
             interval_hours,
@@ -296,7 +296,7 @@ class DailyScheduler:
         try:
             data = cast("dict[str, object]", json.loads(state_path.read_text()))
         except (OSError, json.JSONDecodeError) as e:
-            logger.warning("Could not load scheduler state: %s", e)
+            _LOGGER.warning("Could not load scheduler state: %s", e)
             return {}
         return data
 
@@ -310,7 +310,7 @@ class DailyScheduler:
             state_path.parent.mkdir(parents=True, exist_ok=True)
             _ = state_path.write_text(json.dumps(self._state, indent=2))
         except OSError:
-            logger.exception("Could not save scheduler state")
+            _LOGGER.exception("Could not save scheduler state")
 
     def _daily_anchor(self, t: float) -> float:
         """Return the epoch timestamp of today's period anchor for ``t``."""
