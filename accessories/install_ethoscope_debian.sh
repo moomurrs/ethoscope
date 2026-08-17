@@ -263,7 +263,7 @@ step_install_apt_packages() {
         python3-dev \
         libcap-dev \
         pkg-config \
-        git wget curl lm-sensors btop
+        git wget curl lm-sensors btop nmap
 
     print_info "Restarting network services to ensure DNS works..."
     systemctl restart systemd-networkd systemd-resolved || true
