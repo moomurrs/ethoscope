@@ -4,7 +4,7 @@ Unit tests for drawers/drawers.py.
 Tests BaseDrawer, NullDrawer, and DefaultDrawer frame annotation.
 """
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -239,13 +239,73 @@ class TestBaseDrawerLifecycle:
         assert frame.shape == (40, 50, 3)
         assert frame.mean() > 0
 
+    def test_preview_mode_throttles_annotation(self):
+        """Preview-only drawers annotate at most once per second."""
+        drawer = DefaultDrawer()
+        img = np.zeros((40, 50), dtype=np.uint8)
+
+        with (
+            patch(
+                "ethoscope.drawers.drawers.time.monotonic",
+                side_effect=(100.0, 100.5, 101.0),
+            ),
+            patch.object(drawer, "_annotate_frame") as annotate_frame,
+        ):
+            drawer.draw(img, {}, [])
+            drawer.draw(img, {}, [])
+            drawer.draw(img, {}, [])
+
+        expected_render_count = 2
+        assert annotate_frame.call_count == expected_render_count
+
+    def test_video_output_remains_full_rate(self):
+        """Video output continues to annotate every input frame."""
+        drawer = DefaultDrawer(video_out="unused.avi")
+        img = np.zeros((40, 50), dtype=np.uint8)
+
+        with (
+            patch("ethoscope.drawers.drawers.time.monotonic") as monotonic,
+            patch.object(drawer, "_annotate_frame") as annotate_frame,
+            patch.object(drawer, "_write_video_frame") as write_video_frame,
+        ):
+            drawer.draw(img, {}, [])
+            drawer.draw(img, {}, [])
+
+        monotonic.assert_not_called()
+        expected_render_count = 2
+        assert annotate_frame.call_count == expected_render_count
+        assert write_video_frame.call_count == expected_render_count
+
+    def test_display_remains_full_rate(self):
+        """Live display continues to annotate every input frame."""
+        drawer = DefaultDrawer()
+        drawer._draw_frames = True
+        img = np.zeros((40, 50), dtype=np.uint8)
+
+        with (
+            patch("ethoscope.drawers.drawers.time.monotonic") as monotonic,
+            patch("ethoscope.drawers.drawers.cv2.imshow"),
+            patch("ethoscope.drawers.drawers.cv2.waitKey"),
+            patch.object(drawer, "_annotate_frame") as annotate_frame,
+        ):
+            drawer.draw(img, {}, [])
+            drawer.draw(img, {}, [])
+
+        monotonic.assert_not_called()
+        expected_render_count = 2
+        assert annotate_frame.call_count == expected_render_count
+
     def test_draw_reallocates_on_dtype_change(self):
         drawer = DefaultDrawer()
-        drawer.draw(np.zeros((40, 50), dtype=np.uint8), {}, [])
-        frame = drawer.last_drawn_frame
-        assert frame is not None
-        assert frame.dtype == np.uint8
-        drawer.draw(np.zeros((40, 50), dtype=np.float32), {}, [])
-        frame = drawer.last_drawn_frame
-        assert frame is not None
-        assert frame.dtype == np.float32
+        with patch(
+            "ethoscope.drawers.drawers.time.monotonic",
+            side_effect=(100.0, 101.0),
+        ):
+            drawer.draw(np.zeros((40, 50), dtype=np.uint8), {}, [])
+            frame = drawer.last_drawn_frame
+            assert frame is not None
+            assert frame.dtype == np.uint8
+            drawer.draw(np.zeros((40, 50), dtype=np.float32), {}, [])
+            frame = drawer.last_drawn_frame
+            assert frame is not None
+            assert frame.dtype == np.float32

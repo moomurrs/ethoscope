@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, override
 
 import cv2
@@ -48,6 +49,7 @@ _LABEL_OFFSET_X = 10
 _LABEL_OFFSET_Y = 40
 _MIN_ROI_EXTENT = 50
 _DEFAULT_ROI_EXTENT = 100
+_PREVIEW_INTERVAL_SECONDS = 1.0
 
 
 class BaseDrawer:
@@ -89,6 +91,7 @@ class BaseDrawer:
         self._video_out_fps: float = video_out_fps
         self._video_writer: cv2.VideoWriter | None = None
         self._last_drawn_frame: np.ndarray | None = None
+        self._last_preview_time: float | None = None
 
         if draw_frames:
             cv2.namedWindow(self._live_window_name, cv2.WINDOW_AUTOSIZE)
@@ -130,6 +133,8 @@ class BaseDrawer:
 
         The input frame is copied into a reusable BGR buffer (pre-allocated
         once per frame size/dtype) which is then annotated in place.
+        Preview-only rendering is throttled to once per second; display and
+        video output remain full rate.
 
         Args:
             img: The frame that was just processed (grayscale or BGR).
@@ -138,6 +143,16 @@ class BaseDrawer:
             tracking_units: The tracking units corresponding to the positions.
             reference_points: Optional reference points to mark.
         """
+        preview_time: float | None = None
+        if not self._draw_frames and self._video_out is None:
+            preview_time = time.monotonic()
+            if (
+                self._last_preview_time is not None
+                and preview_time - self._last_preview_time
+                < _PREVIEW_INTERVAL_SECONDS
+            ):
+                return
+
         buffer = self._last_drawn_frame
         if (
             buffer is None
@@ -159,6 +174,9 @@ class BaseDrawer:
             cv2.waitKey(1)
 
         self._write_video_frame(buffer)
+
+        if preview_time is not None:
+            self._last_preview_time = preview_time
 
     def _write_video_frame(self, frame: np.ndarray) -> None:
         """Lazily open the output video and append a frame to it."""
