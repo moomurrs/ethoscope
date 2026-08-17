@@ -2,11 +2,11 @@
 A general test to try to find out if anything is wrong with the API.
 """
 
-import os
 import random
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from _constants import DRAW_FRAMES, VIDEO
 
@@ -35,12 +35,12 @@ class MockInterface(BaseInterface):
 
 class MockStimulator(BaseStimulator):
     _HardwareInterfaceClass = MockInterface
+    _INTERACTION_PROBABILITY = 0.01
 
     def _decide(self):
         roi_id = self._tracker._roi.idx
         now = self._tracker.last_time_point
-        # every 100 times:
-        interact = random.uniform(0.0, 1.0) < 0.01
+        interact = random.uniform(0.0, 1.0) < self._INTERACTION_PROBABILITY
         return HasInteractedVariable(interact), {"channel": roi_id, "time": now}
 
 
@@ -54,12 +54,12 @@ class TestAPI(unittest.TestCase):
         random.seed(1)
         cam = MovieVirtualCamera(VIDEO)
         rb = FileBasedROIBuilder(template_name="sleep_monitor_20tube")
-        reference_points, rois = rb.build(cam)
+        _reference_points, rois = rb.build(cam)
         hc = HardwareConnection(MockInterface)
         stimulators = [MockStimulator(hc) for _ in rois]
 
         cam.restart()
-        mon = Monitor(cam, AdaptiveBGModel, rois, stimulators)
+        mon = Monitor(cam, AdaptiveBGModel, rois, stimulators=stimulators)
 
         drawer = DefaultDrawer(draw_frames=DRAW_FRAMES)
         tmp = tempfile.mkstemp(suffix="_ethoscope_test.db")[1]
@@ -67,7 +67,7 @@ class TestAPI(unittest.TestCase):
             print("Making a tmp db: " + tmp)
             with SQLiteResultWriter({"name": tmp}, rois) as rw:
                 mon.run(result_writer=rw, drawer=drawer)
-        except Exception:
+        except Exception:  # noqa: BLE001
             self.fail("testAPI raised ExceptionType unexpectedly!")
         finally:
             hc.stop()
@@ -76,4 +76,4 @@ class TestAPI(unittest.TestCase):
                 print("Warning: Hardware thread did not terminate cleanly")
             cam._close()
             print("Removing temp db (" + tmp + ")")
-            os.remove(tmp)
+            Path(tmp).unlink()
