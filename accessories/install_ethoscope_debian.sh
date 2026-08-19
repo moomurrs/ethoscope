@@ -56,8 +56,6 @@ STEP_NAMES=(
     "Configure system identity"
     "Configure time sync (NTP)"
     "Enable system services"
-    "Configure network (ethernet + WiFi)"
-    "Configure WiFi"
     "Setup MariaDB database"
     "Configure MariaDB"
     "Configure Raspberry Pi hardware"
@@ -263,11 +261,8 @@ step_install_apt_packages() {
         python3-dev \
         libcap-dev \
         pkg-config \
-        git wget curl lm-sensors btop nmap
+        git wget curl lm-sensors btop
 
-    print_info "Restarting network services to ensure DNS works..."
-    systemctl restart systemd-networkd systemd-resolved || true
-    sleep 2 # Give the network stack a brief moment to come back up
 
     # Time synchronization: use chrony for accurate NTP sync
     print_info "Disabling systemd-timesyncd to make room for chrony..."
@@ -504,92 +499,7 @@ step_enable_system_services() {
 }
 
 #===============================================================================
-# STEP 8: NETWORK CONFIGURATION
-#===============================================================================
-
-step_configure_network() {
-    print_info "Disabling conflicting network managers..."
-    systemctl disable NetworkManager ModemManager dhcpcd 2>/dev/null || true
-    systemctl stop NetworkManager ModemManager dhcpcd 2>/dev/null || true
-
-    print_info "Configuring wired network (eth0)..."
-    cat > /etc/systemd/network/20-wired.network << 'EOF'
-[Match]
-Name=eth0
-
-[Network]
-DHCP=yes
-LinkLocalAddressing=yes
-
-[DHCPv4]
-RouteMetric=10
-UseDNS=yes
-EOF
-
-    print_info "Configuring wireless network (wlan0)..."
-    cat > /etc/systemd/network/25-wireless.network << 'EOF'
-[Match]
-Name=wlan0
-
-[Network]
-DHCP=yes
-LinkLocalAddressing=yes
-# Address=10.14.22.XXX/24 # YOUR CURRENT IP
-
-[DHCPv4]
-ClientIdentifier=mac
-KeepConfiguration=yes
-UseHostname=yes
-RouteMetric=20
-UseDNS=yes
-EOF
-
-    systemctl enable systemd-networkd systemd-resolved
-    systemctl disable systemd-networkd-wait-online 2>/dev/null || true
-
-    ip link set eth0 up 2>/dev/null || true
-    ip link set wlan0 up 2>/dev/null || true
-
-    mkdir -p /etc/systemd/resolved.conf.d
-    cat > /etc/systemd/resolved.conf.d/ethoscope.conf << 'EOF'
-[Resolve]
-DNS=8.8.8.8 1.1.1.1
-FallbackDNS=8.8.4.4 1.0.0.1
-EOF
-
-    print_success "Network configured"
-}
-
-#===============================================================================
-# STEP 9: WIFI CONFIGURATION
-#===============================================================================
-
-step_configure_wifi() {
-    print_info "Setting WiFi country to US..."
-    if command -v raspi-config >/dev/null 2>&1; then
-        raspi-config nonint do_wifi_country US
-    else
-        if [[ ! -f /etc/wpa_supplicant/wpa_supplicant.conf ]] || ! grep -q "country=" /etc/wpa_supplicant/wpa_supplicant.conf; then
-            echo "country=US" >> /etc/wpa_supplicant/wpa_supplicant.conf
-        fi
-    fi
-
-    if command -v rfkill >/dev/null 2>&1; then
-        print_info "Unblocking WiFi..."
-        rfkill unblock wifi
-        rfkill unblock all
-    fi
-
-    print_info "Configuring default WiFi (ETHOSCOPE_WIFI)..."
-    wpa_passphrase ETHOSCOPE_WIFI ETHOSCOPE_1234 > /etc/wpa_supplicant/wpa_supplicant-wlan0.conf
-    systemctl enable wpa_supplicant
-    systemctl enable wpa_supplicant@wlan0.service
-
-    print_success "WiFi configured (SSID: ETHOSCOPE_WIFI)"
-}
-
-#===============================================================================
-# STEP 10: MARIADB SETUP
+# STEP 8: MARIADB SETUP
 #===============================================================================
 
 step_setup_mariadb() {
@@ -633,7 +543,7 @@ EOF
 }
 
 #===============================================================================
-# STEP 11: MARIADB CONFIGURATION
+# STEP 9: MARIADB CONFIGURATION
 #===============================================================================
 
 step_configure_mariadb() {
@@ -678,7 +588,7 @@ EOF
 }
 
 #===============================================================================
-# STEP 12: HARDWARE CONFIGURATION
+# STEP 10: HARDWARE CONFIGURATION
 #===============================================================================
 
 step_configure_raspberry_pi_hardware() {
@@ -794,7 +704,6 @@ do_reset() {
     reset_set_system_date
     step_configure_system_identity    # Reuse install step 5
     reset_set_timezone
-    step_configure_network            # Reuse install step 8
     reset_clean_package_cache
 
     echo ""
@@ -827,11 +736,9 @@ run_step() {
         5)  step_configure_system_identity ;;
         6)  step_configure_time_sync ;;
         7)  step_enable_system_services ;;
-        8)  step_configure_network ;;
-        9)  step_configure_wifi ;;
-        10) step_setup_mariadb ;;
-        11) step_configure_mariadb ;;
-        12) step_configure_raspberry_pi_hardware ;;
+        8)  step_setup_mariadb ;;
+        9)  step_configure_mariadb ;;
+        10) step_configure_raspberry_pi_hardware ;;
         *)  print_error "Unknown step: $step_num"; exit 1 ;;
     esac
 
