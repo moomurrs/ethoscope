@@ -263,6 +263,9 @@ step_install_apt_packages() {
         pkg-config \
         git wget curl lm-sensors btop
 
+    print_info "Restarting network services to ensure DNS works..."
+    systemctl restart systemd-networkd systemd-resolved || true
+    sleep 2 # Give the network stack a brief moment to come back up
 
     # Time synchronization: use chrony for accurate NTP sync
     print_info "Disabling systemd-timesyncd to make room for chrony..."
@@ -450,7 +453,7 @@ EOF
 step_enable_system_services() {
     print_info "Enabling ethoscope services..."
     systemctl enable ethoscope_device.service ethoscope_listener.service \
-        ethoscope_light.service
+        # ethoscope_light.service
 
     # Chrony service
     print_info "Enabling chrony service..."
