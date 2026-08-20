@@ -20,11 +20,6 @@ from .base import BaseAPI, error_decorator
 # on the Docker network. Used for health checks in Docker mode.
 # None means the service has no Docker container equivalent.
 SYSTEM_DAEMONS = {
-    "ethoscope_backup_mysql": {
-        "description": "The service that collects data from the ethoscope mariadb and syncs them with the node.",
-        "conflicts_with": [],
-        "docker_container": {"host": "ethoscope-node-backup", "port": 8090},
-    },
     "ethoscope_backup_video": {
         "description": "The service that collects videos in h264 chunks from the ethoscopes and syncs them with the node",
         "conflicts_with": ["ethoscope_backup_unified"],

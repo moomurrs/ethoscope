@@ -86,9 +86,7 @@ class TestBaseAsyncSQLWriterRun:
 
         writer.run()
 
-        db.cursor().execute.assert_called_once_with(
-            "INSERT INTO t VALUES (?)", (1,)
-        )
+        db.cursor().execute.assert_called_once_with("INSERT INTO t VALUES (?)", (1,))
 
     def test_run_stops_on_critical_error(self):
         db = Mock()
@@ -117,9 +115,7 @@ class TestBaseAsyncSQLWriterRun:
 
     def test_run_keyboard_interrupt_sets_ready(self):
         writer = _ConcreteAsyncWriter(Mock())
-        writer._get_connection = Mock(
-            side_effect=KeyboardInterrupt()
-        )
+        writer._get_connection = Mock(side_effect=KeyboardInterrupt())
         with pytest.raises(KeyboardInterrupt):
             writer.run()
         assert writer._ready_event.is_set()
@@ -387,32 +383,6 @@ class TestResilienceInternals:
 
 
 class TestDbAppenderGaps:
-    def test_detect_type_uses_cache(self):
-        appender = object.__new__(dbAppender)
-        appender.db_credentials = {"name": "ETHOSCOPE_DEVICE"}
-        with patch(
-            "ethoscope.io.cache.get_all_databases_info", create=True,
-            return_value={"SQLite": {"exp.db": {}}, "MariaDB": {}},
-        ):
-            assert appender._detect_database_type("exp.db") == "SQLite"
-
-    def test_detect_type_mysql_from_cache(self):
-        appender = object.__new__(dbAppender)
-        appender.db_credentials = {"name": "ETHOSCOPE_DEVICE"}
-        with patch(
-            "ethoscope.io.cache.get_all_databases_info", create=True,
-            return_value={"SQLite": {}, "MariaDB": {"ethoscope_db": {}}},
-        ):
-            assert appender._detect_database_type("ethoscope_db") == "MySQL"
-
-    def test_detect_type_default_mysql_for_simple_name(self):
-        appender = object.__new__(dbAppender)
-        appender.db_credentials = {"name": "test"}
-        with patch(
-            "ethoscope.io.cache.get_all_databases_info", create=True, side_effect=Exception
-        ):
-            assert appender._detect_database_type("my_db") == "MySQL"
-
     def test_create_sqlite_writer(self):
         appender = object.__new__(dbAppender)
         appender.database_to_append = "/tmp/x.db"
@@ -429,26 +399,6 @@ class TestDbAppenderGaps:
         writer = Mock()
         with patch("ethoscope.io.sqlite.SQLiteResultWriter", return_value=writer):
             appender._create_sqlite_writer()
-
-        assert appender._writer is writer
-        assert appender.kwargs["erase_old_db"] is False
-
-    def test_create_mysql_writer(self):
-        appender = object.__new__(dbAppender)
-        appender.database_to_append = "ethoscope_db"
-        appender.db_credentials = {"name": "ethoscope_db"}
-        appender.rois = []
-        appender.metadata = None
-        appender.make_dam_like_table = False
-        appender.take_frame_shots = False
-        appender.sensor = None
-        appender.db_host = "localhost"
-        appender.args = ()
-        appender.kwargs = {}
-
-        writer = Mock()
-        with patch("ethoscope.io.mysql.MySQLResultWriter", return_value=writer):
-            appender._create_mysql_writer()
 
         assert appender._writer is writer
         assert appender.kwargs["erase_old_db"] is False
@@ -474,15 +424,14 @@ class TestDbAppenderGaps:
     def test_get_available_databases(self):
         appender = object.__new__(dbAppender)
         with patch(
-            "ethoscope.io.cache.get_all_databases_info", create=True,
+            "ethoscope.io.cache.get_all_databases_info",
+            create=True,
             return_value={
                 "SQLite": {
                     "exp.db": {"file_exists": True, "filesize": 50000, "path": "/x"}
                 },
-                "MariaDB": {"ethoscope_db": {"db_size_bytes": 10}},
             },
         ):
             dbs = appender.get_available_databases({"name": "test"})
         names = {d["name"] for d in dbs}
         assert "exp.db" in names
-        assert "ethoscope_db" in names

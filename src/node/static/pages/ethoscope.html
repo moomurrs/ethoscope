@@ -289,33 +289,6 @@
             <!-- Enhanced backup status using /backup/status endpoint data -->
             <div ng-if="backupSummary && backupSummary.useDetailedStatus && device.backup_status_detailed">
 
-                <!-- MySQL/MariaDB Backup -->
-                <div ng-if="device.backup_status_detailed.backup_types.mysql && device.backup_status_detailed.backup_types.mysql.available" class="database-type-section">
-                    <h5><span class="fa fa-server"></span> MySQL Database</h5>
-                    <div class="database-backup-item">
-                        <div class="database-info">
-                            <span class="database-name" ng-if="device.backup_status_detailed.backup_types.mysql.last_backup">{{formatDate(device.backup_status_detailed.backup_types.mysql.last_backup)}}</span>
-                            <span class="database-name" ng-if="!device.backup_status_detailed.backup_types.mysql.last_backup">MySQL Backup</span>
-                            <div class="backup-details">
-                                <small ng-if="device.backup_status_detailed.backup_types.mysql.last_backup">
-                                    Last backup: {{getTimeSinceBackup(device.backup_status_detailed.backup_types.mysql.last_backup)}}
-                                </small>
-                                <small ng-if="device.backup_status_detailed.backup_types.mysql.records">
-                                    ({{device.backup_status_detailed.backup_types.mysql.records}} records)
-                                </small>
-                            </div>
-                        </div>
-                        <div class="backup-progress-container">
-                            <div class="backup-progress-bar mysql-db" title="{{getBackupStatusText(device.backup_status_detailed.backup_types.mysql, 'mysql')}}">
-                                <div class="backup-progress-fill" ng-class="getBackupBarClass(device.backup_status_detailed.backup_types.mysql, 'mysql')" ng-style="getBackupProgressStyle(device.backup_status_detailed.backup_types.mysql, 'mysql')"></div>
-                            </div>
-                        </div>
-                        <div class="database-file-size">
-                            {{formatFileSize(device.backup_status_detailed.backup_types.mysql.size)}}
-                        </div>
-                    </div>
-                </div>
-
                 <!-- SQLite Database Files -->
                 <div ng-if="device.backup_status_detailed.backup_types.sqlite && device.backup_status_detailed.backup_types.sqlite.available" class="database-type-section">
                     <h5><span class="fa fa-file-database-o"></span> SQLite Databases ({{device.backup_status_detailed.backup_types.sqlite.files}} files)</h5>
@@ -433,23 +406,6 @@
                     </div>
                 </div>
 
-                <!-- MariaDB Databases -->
-                <div ng-if="device.databases.MariaDB && getObjectKeys(device.databases.MariaDB).length > 0" class="database-type-section">
-                    <h5><span class="fa fa-server"></span> MariaDB Databases</h5>
-                    <div ng-repeat="(dbName, dbInfo) in device.databases.MariaDB" class="database-backup-item">
-                        <div class="database-info">
-                            <span class="database-name">{{extractDateTimeFromFilename(dbName)}}</span>
-                        </div>
-                        <div class="backup-progress-container">
-                            <div class="backup-progress-bar mariadb-db" title="{{getBackupStatusText(dbInfo)}}">
-                                <div class="backup-progress-fill" ng-class="getBackupBarClass(dbInfo)" ng-style="getBackupProgressStyle(dbInfo, 'mariadb')"></div>
-                            </div>
-                        </div>
-                        <div class="database-file-size">
-                            {{formatFileSize(dbInfo.db_size_bytes)}}
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <!-- Overall Status Summary -->
@@ -791,10 +747,8 @@
                 <div ng-if="!backupInProgress && !backupComplete && !backupError">
                     <!-- Backup type indicator -->
                     <div class="alert" ng-class="{'alert-info': backupConfig.type === 'rsync',
-                                                   'alert-warning': backupConfig.type === 'mysql',
                                                    'alert-danger': backupConfig.type === 'none'}">
                         <strong>Backup Type:</strong>
-                        <span ng-if="backupConfig.type === 'mysql'"><span class="fa fa-server"></span> MySQL/MariaDB</span>
                         <span ng-if="backupConfig.type === 'rsync'"><span class="fa fa-file"></span> SQLite (rsync)</span>
                         <span ng-if="backupConfig.type === 'none'"><span class="fa fa-exclamation-triangle"></span> No databases available</span>
                         <span ng-if="backupConfig.loading"><span class="fa fa-spinner fa-spin"></span> Detecting...</span>
@@ -815,12 +769,6 @@
                                 <span class="fa fa-video-camera"></span> Videos (h264)
                             </label>
                         </div>
-                    </div>
-
-                    <!-- MySQL info -->
-                    <div ng-if="backupConfig.type === 'mysql'" style="padding: 15px;">
-                        <p><span class="fa fa-info-circle"></span> MySQL databases will be backed up to SQLite format.</p>
-                        <p class="text-muted"><small>Video backup not available for MySQL devices.</small></p>
                     </div>
 
                     <!-- Start button -->

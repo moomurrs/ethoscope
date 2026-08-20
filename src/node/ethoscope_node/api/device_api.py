@@ -310,10 +310,7 @@ class DeviceAPI(BaseAPI):
 
     @error_decorator
     def _force_device_backup(self, id):
-        """Force backup on device with specified id.
-
-        Auto-detects backup type (MySQL vs SQLite/rsync) and accepts optional
-        parameters to control backup scope.
+        """Force backup on device with specified id (SQLite/rsync only).
 
         Request body (optional JSON):
             backup_databases (bool): Whether to backup databases (default: True)
@@ -323,7 +320,6 @@ class DeviceAPI(BaseAPI):
             dict: Backup result with success status, backup_type, and backup_scope
         """
         from ethoscope_node.backup.helpers import (
-            BackupClass,
             UnifiedRsyncBackupClass,
             get_device_backup_info,
         )
@@ -365,30 +361,7 @@ class DeviceAPI(BaseAPI):
                 f"Initiating {backup_type} backup for device {device_info['id']}"
             )
 
-            if backup_type == "mysql":
-                # MySQL backup (existing logic)
-                backup_job = BackupClass(device_info, results_dir=self.results_dir)
-                self.logger.info(f"Running MySQL backup for device {device_info['id']}")
-
-                success = False
-                for status_update in backup_job.backup():
-                    status = json.loads(status_update)
-                    self.logger.info(f"Backup status: {status}")
-                    if status.get("status") == "success":
-                        success = True
-
-                if success:
-                    self.logger.info(
-                        f"MySQL backup done for device {device_info['id']}"
-                    )
-                else:
-                    self.logger.error(
-                        f"MySQL backup for device {device_info['id']} could not be completed"
-                    )
-
-                return {"success": success, "backup_type": "mysql"}
-
-            elif backup_type == "rsync":
+            if backup_type == "rsync":
                 # SQLite/rsync backup with selectable scope
                 if not backup_databases and not backup_videos:
                     return {

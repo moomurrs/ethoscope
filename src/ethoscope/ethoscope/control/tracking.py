@@ -24,7 +24,6 @@ from ethoscope.hardware.input.cameras import (
 )
 from ethoscope.hardware.interfaces.interfaces import EthoscopeSensor, HardwareConnection
 from ethoscope.io import (
-    MySQLResultWriter,
     SQLiteResultWriter,
     create_metadata_cache,
 )
@@ -237,7 +236,6 @@ class ControlThread(Thread):
                 {
                     "possible_classes": [
                         SQLiteResultWriter,
-                        MySQLResultWriter,
                     ],
                 },
             ),
@@ -323,10 +321,8 @@ class ControlThread(Thread):
 
         self._tmp_dir = tempfile.mkdtemp(prefix="ethoscope_")
 
-        # Database metadata tracking
+        # Database metadata tracking (SQLite)
         self._tracking_start_time = None
-        # DatabaseMetadataCache is only compatible with MySQL databases
-        # For SQLite, we'll create it only when needed (see metadata cache initialization)
         self._metadata_cache = None
 
         # todo add 'data' -> how monitor was started to metadata
@@ -955,7 +951,7 @@ class ControlThread(Thread):
             }
         )
 
-        # Configure database credentials and metadata cache based on result writer type
+        # Configure database credentials and metadata cache – SQLite only
         if (
             result_writer_type == "SQLite3"
             or result_writer_type == "SQLiteResultWriter"
@@ -971,7 +967,6 @@ class ControlThread(Thread):
             os.makedirs(sqlite_dir, exist_ok=True)
             logging.info(f"Created SQLite directory structure: {sqlite_dir}")
 
-            # Create clean SQLite credentials (only database path, no MySQL connection params)
             sqlite_credentials = {"name": sqlite_source_path}
             rw = ResultWriterClass(
                 sqlite_credentials, rois, self._metadata, **result_writer_kwargs
@@ -986,7 +981,6 @@ class ControlThread(Thread):
                 )
 
             # Initialize SQLite metadata cache for JSON file generation
-            # Use clean SQLite credentials (only database path)
             cache_credentials = {"name": sqlite_source_path}
             self._metadata_cache = create_metadata_cache(
                 db_credentials=cache_credentials,
@@ -995,7 +989,7 @@ class ControlThread(Thread):
                 database_type="SQLite3",
             )
         elif result_writer_type == "dbAppender":
-            # dbAppender handles database discovery and append functionality internally
+            # dbAppender handles database discovery and append functionality internally (SQLite only)
             rw = ResultWriterClass(
                 db_credentials=self._db_credentials,
                 rois=rois,
@@ -1011,25 +1005,16 @@ class ControlThread(Thread):
                     f"Updated backup filename from result writer: {backup_filename_from_writer}"
                 )
 
-            # Initialize metadata cache based on detected database type
-            # The dbAppender will have created the appropriate writer internally
+            # Initialize metadata cache – dbAppender now always uses SQLite
             if hasattr(rw, "_writer") and hasattr(rw._writer, "_database_type"):
                 db_type = rw._writer._database_type
-
-                # Update result_writer_type to the actual database type instead of "dbAppender"
                 result_writer_type = db_type
                 logging.info(
                     f"dbAppender: Updated result_writer_type from 'dbAppender' to '{db_type}'"
                 )
-
-                if db_type == "SQLite3":
-                    cache_credentials = {"name": rw._writer._db_credentials["name"]}
-                    cache_db_type = "SQLite3"
-                    # Update sqlite_source_path for SQLite dbAppender
-                    sqlite_source_path = rw._writer._db_credentials["name"]
-                else:
-                    cache_credentials = self._db_credentials
-                    cache_db_type = "MySQL"
+                cache_credentials = {"name": rw._writer._db_credentials["name"]}
+                cache_db_type = "SQLite3"
+                sqlite_source_path = rw._writer._db_credentials["name"]
 
                 self._metadata_cache = create_metadata_cache(
                     db_credentials=cache_credentials,
@@ -1039,20 +1024,14 @@ class ControlThread(Thread):
                 )
 
                 # For dbAppender, get the original experiment timestamp from the database
-                # This ensures we reuse the existing cache file instead of creating a new one
                 try:
                     original_timestamp = self._metadata_cache.get_database_timestamp()
                     if original_timestamp:
-                        # Update the experiment time to use the original timestamp
                         experiment_time = original_timestamp
                         logging.info(
                             f"dbAppender: Using original experiment timestamp {original_timestamp} from database"
                         )
-
-                        # Update metadata with original experiment time
                         self._metadata["date_time"] = experiment_time
-
-                        # Update backup filename to match original experiment
                         original_backup_filename = (
                             self._metadata_cache.get_backup_filename()
                         )
@@ -1062,7 +1041,6 @@ class ControlThread(Thread):
                                 f"dbAppender: Using original backup filename {original_backup_filename}"
                             )
                         else:
-                            # Generate backup filename from original timestamp
                             ts_str = time.strftime(
                                 "%Y-%m-%d_%H-%M-%S", time.localtime(original_timestamp)
                             )
@@ -1083,38 +1061,20 @@ class ControlThread(Thread):
             else:
                 # Fallback to standard metadata cache
                 self._metadata_cache = create_metadata_cache(
-                    db_credentials=self._db_credentials,
+                    db_credentials={"name": self._db_credentials["name"]},
                     device_name=self._info["name"],
                     cache_dir=self._cache_dir,
-                    database_type="MySQL",
+                    database_type="SQLite3",
                 )
 
             # Update metadata and experiment_info_to_store with the correct result_writer_type
-            # (they were created before we knew the actual database type)
             self._metadata["result_writer_type"] = result_writer_type
             self._metadata["sqlite_source_path"] = sqlite_source_path
             experiment_info_to_store["result_writer_type"] = result_writer_type
             experiment_info_to_store["sqlite_source_path"] = sqlite_source_path
         else:
-            # MySQL uses standard credentials and metadata cache
-            rw = ResultWriterClass(
-                self._db_credentials, rois, self._metadata, **result_writer_kwargs
-            )
-
-            # Get the backup filename from the result writer (may be different from initial one)
-            backup_filename_from_writer = rw.get_backup_filename()
-            if backup_filename_from_writer:
-                self._info["backup_filename"] = backup_filename_from_writer
-                logging.info(
-                    f"Updated backup filename from result writer: {backup_filename_from_writer}"
-                )
-
-            # Initialize MySQL metadata cache
-            self._metadata_cache = create_metadata_cache(
-                db_credentials=self._db_credentials,
-                device_name=self._info["name"],
-                cache_dir=self._cache_dir,
-                database_type="MySQL",
+            raise ValueError(
+                f"Unsupported result_writer_type: {result_writer_type} – only SQLite is supported"
             )
 
         # Store experiment information in cache (replaces last_run_info file)

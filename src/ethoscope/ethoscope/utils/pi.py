@@ -1009,37 +1009,42 @@ def SQL_dump(
     outputfile=None,
 ):
     """
-    Creates a SQL dump of the specified database
+    Deprecated: MySQL dump removed – SQLite databases are plain files.
+    For SQLite, this function will attempt a sqlite3 dump if the database file exists.
     """
+    import logging
 
-    if credentials is None:
-        credentials = {"username": "ethoscope", "password": "ethoscope"}
     if database_name is None:
         database_name = get_machine_name() + "_db"
 
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    # If database_name is a SQLite file path or name with .db, try sqlite3 dump
+    possible_paths = [
+        database_name,
+        os.path.join("/ethoscope_data/results", database_name),
+    ]
+    # Also check if it's a file-based SQLite DB
+    for path in possible_paths:
+        if os.path.exists(path) and path.endswith(".db"):
+            try:
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                if outputfile is None:
+                    formatted_time = datetime.datetime.now().strftime(
+                        "%Y-%m-%d_%H-%M-%S"
+                    )
+                    outputfile = f"{os.path.basename(path)}_{formatted_time}.sql"
+                fullpath = os.path.join(output_dir, outputfile)
+                cmd = f"sqlite3 {path} .dump > {fullpath}"
+                with os.popen(cmd, "r") as c:
+                    c.read()
+                logging.info(f"SQLite dump created at {fullpath}")
+                return True
+            except Exception as e:
+                logging.warning(f"SQLite dump failed: {e}")
+                return False
 
-    if outputfile is None:
-        formatted_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        outputfile = f"{database_name}_{formatted_time}.sql"
-
-    fullpath = os.path.join(output_dir, outputfile)
-
-    cmd = "mysqldump -alv --compatible=ansi --skip-extended-insert --compact --user={} --password={} {} > {}".format(
-        credentials["username"], credentials["password"], database_name, fullpath
-    )
-
-    try:
-        # Exporting the database can take some time
-        # I am not really sure if there is a way to get a real time feedback of the process
-        with os.popen(cmd, "r") as c:
-            c.read()
-
-        return True
-
-    except Exception:
-        return False
+    logging.warning("SQL_dump called for non-SQLite database – no dump created.")
+    return False
 
 
 def loggingStatus(status=None):

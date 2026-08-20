@@ -506,7 +506,7 @@ class TestDeviceAPI(unittest.TestCase):
         )
 
     @patch("ethoscope_node.backup.helpers.get_device_backup_info")
-    @patch("ethoscope_node.backup.helpers.BackupClass")
+    @patch("ethoscope_node.backup.helpers.UnifiedRsyncBackupClass")
     def test_force_device_backup_success(self, mock_backup_class, mock_get_backup_info):
         """Test forcing device backup successfully."""
         mock_device = Mock()
@@ -514,7 +514,7 @@ class TestDeviceAPI(unittest.TestCase):
         self.api.device_scanner.get_device.return_value = mock_device
 
         # Mock backup info detection
-        mock_get_backup_info.return_value = {"recommended_backup_type": "mysql"}
+        mock_get_backup_info.return_value = {"recommended_backup_type": "rsync"}
 
         # Mock backup job
         mock_backup_job = Mock()
@@ -530,7 +530,7 @@ class TestDeviceAPI(unittest.TestCase):
         mock_backup_class.assert_called_once()
 
     @patch("ethoscope_node.backup.helpers.get_device_backup_info")
-    @patch("ethoscope_node.backup.helpers.BackupClass")
+    @patch("ethoscope_node.backup.helpers.UnifiedRsyncBackupClass")
     def test_force_device_backup_failure(self, mock_backup_class, mock_get_backup_info):
         """Test forcing device backup with failure."""
         mock_device = Mock()
@@ -538,7 +538,7 @@ class TestDeviceAPI(unittest.TestCase):
         self.api.device_scanner.get_device.return_value = mock_device
 
         # Mock backup info detection
-        mock_get_backup_info.return_value = {"recommended_backup_type": "mysql"}
+        mock_get_backup_info.return_value = {"recommended_backup_type": "rsync"}
 
         # Mock backup job that fails
         mock_backup_job = Mock()
@@ -553,7 +553,7 @@ class TestDeviceAPI(unittest.TestCase):
         self.assertFalse(result["success"])
 
     @patch("ethoscope_node.backup.helpers.get_device_backup_info")
-    @patch("ethoscope_node.backup.helpers.BackupClass")
+    @patch("ethoscope_node.backup.helpers.UnifiedRsyncBackupClass")
     def test_force_device_backup_exception(
         self, mock_backup_class, mock_get_backup_info
     ):
@@ -563,7 +563,7 @@ class TestDeviceAPI(unittest.TestCase):
         self.api.device_scanner.get_device.return_value = mock_device
 
         # Mock backup info detection
-        mock_get_backup_info.return_value = {"recommended_backup_type": "mysql"}
+        mock_get_backup_info.return_value = {"recommended_backup_type": "rsync"}
 
         mock_backup_class.side_effect = Exception("Backup error")
 

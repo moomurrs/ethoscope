@@ -44,7 +44,6 @@ requires-python = ">=3.12"
 dependencies = [
     "bottle>=0.13.4",
     "cherrypy>=18.10.0",
-    "mysql-connector-python>=8.0.16",
     "netifaces>=0.11.0",
     "GitPython>=3.1.44",
     "zeroconf>=0.147.0",
@@ -85,7 +84,6 @@ Repository = "https://github.com/gilestrolab/ethoscope"
 Documentation = "http://lab.gilest.ro/ethoscope"
 
 [project.scripts]
-backup_tool = "scripts.backup_tool:main"
 make_index = "scripts.make_index:main"
 server = "scripts.server:main"
 video_backup_tool = "scripts.video_backup_tool:main"

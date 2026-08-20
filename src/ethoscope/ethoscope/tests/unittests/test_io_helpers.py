@@ -56,16 +56,6 @@ class TestSensorDataHelper(unittest.TestCase):
         }
         self.mock_sensor.read_all.return_value = (25.5, 60.0, 1013)
 
-    def test_init_with_mysql(self):
-        """Test initialization with MySQL database type."""
-        helper = SensorDataHelper(self.mock_sensor, period=120, database_type="MySQL")
-
-        self.assertEqual(helper._period, 120)
-        self.assertEqual(helper._database_type, "MySQL")
-        self.assertEqual(helper.sensor, self.mock_sensor)
-        self.assertIn("id", helper._base_headers)
-        self.assertIn("AUTO_INCREMENT", helper._base_headers["id"])
-
     def test_init_with_sqlite(self):
         """Test initialization with SQLite database type."""
         helper = SensorDataHelper(self.mock_sensor, period=60, database_type="SQLite3")
@@ -89,16 +79,6 @@ class TestSensorDataHelper(unittest.TestCase):
         self.assertEqual(sensor_types["temperature"], "REAL")
         self.assertEqual(sensor_types["humidity"], "REAL")
         self.assertEqual(sensor_types["pressure"], "INTEGER")
-
-    def test_get_sensor_types_preserves_mysql_types(self):
-        """Test _get_sensor_types_for_database preserves MySQL types."""
-        helper = SensorDataHelper(self.mock_sensor, database_type="MySQL")
-
-        sensor_types = helper._get_sensor_types_for_database()
-
-        self.assertEqual(sensor_types["temperature"], "FLOAT")
-        self.assertEqual(sensor_types["humidity"], "FLOAT")
-        self.assertEqual(sensor_types["pressure"], "INT")
 
     def test_get_sensor_types_handles_missing_sensor_types(self):
         """Test _get_sensor_types_for_database handles sensors without sensor_types."""
@@ -158,13 +138,13 @@ class TestSensorDataHelper(unittest.TestCase):
         self.assertEqual(sensor_types["other"], "TEXT")
 
     def test_create_command_generates_sql(self):
-        """Test create_command property generates valid SQL."""
-        helper = SensorDataHelper(self.mock_sensor, database_type="MySQL")
+        """Test create_command property generates valid SQL (SQLite)."""
+        helper = SensorDataHelper(self.mock_sensor, database_type="SQLite3")
 
         command = helper.create_command
 
-        self.assertIn("id", command)
-        self.assertIn("t", command)
+        self.assertIn("id INTEGER PRIMARY KEY AUTOINCREMENT", command)
+        self.assertIn("t INTEGER", command)
         self.assertIn("temperature", command)
         self.assertIn("humidity", command)
         self.assertIn("pressure", command)
@@ -180,22 +160,6 @@ class TestSensorDataHelper(unittest.TestCase):
 
         self.assertIsNotNone(result1)
         self.assertIsNone(result2)
-
-    def test_flush_mysql_generates_correct_command(self):
-        """Test flush generates correct MySQL INSERT command."""
-        helper = SensorDataHelper(self.mock_sensor, period=60, database_type="MySQL")
-
-        # t=120000ms = 120s = 2 periods
-        result = helper.flush(120000)
-
-        self.assertIsNotNone(result)
-        command, args = result
-        self.assertIn("INSERT into SENSORS", command)
-        self.assertIn("0", command)  # MySQL uses explicit ID=0
-        self.assertIn("120000", command)
-        self.assertIn("25.5", command)
-        self.assertIn("60.0", command)
-        self.assertIn("1013", command)
 
     def test_flush_sqlite_generates_correct_command(self):
         """Test flush generates correct SQLite INSERT command."""
@@ -250,14 +214,6 @@ class TestImgSnapshotHelper(unittest.TestCase):
             except Exception:
                 pass
 
-    def test_init_with_mysql(self):
-        """Test initialization with MySQL database type."""
-        helper = ImgSnapshotHelper(period=300, database_type="MySQL")
-
-        self.assertEqual(helper._period, 300)
-        self.assertEqual(helper._database_type, "MySQL")
-        self.assertIn("LONGBLOB", helper._table_headers["img"])
-
     def test_init_with_sqlite(self):
         """Test initialization with SQLite database type."""
         helper = ImgSnapshotHelper(period=60, database_type="SQLite3")
@@ -272,14 +228,14 @@ class TestImgSnapshotHelper(unittest.TestCase):
         self.assertEqual(helper.table_name, "IMG_SNAPSHOTS")
 
     def test_create_command_generates_sql(self):
-        """Test create_command property generates valid SQL."""
-        helper = ImgSnapshotHelper(database_type="MySQL")
+        """Test create_command property generates valid SQL (SQLite)."""
+        helper = ImgSnapshotHelper(database_type="SQLite3")
 
         command = helper.create_command
 
-        self.assertIn("id", command)
-        self.assertIn("t", command)
-        self.assertIn("img", command)
+        self.assertIn("id INTEGER PRIMARY KEY AUTOINCREMENT", command)
+        self.assertIn("t INTEGER", command)
+        self.assertIn("img BLOB", command)
 
     def test_flush_returns_none_if_same_tick(self):
         """Test flush returns None if called within same period."""
@@ -293,21 +249,6 @@ class TestImgSnapshotHelper(unittest.TestCase):
 
         self.assertIsNotNone(result1)
         self.assertIsNone(result2)
-
-    def test_flush_mysql_generates_correct_command(self):
-        """Test flush generates correct MySQL INSERT command."""
-        helper = ImgSnapshotHelper(period=60, database_type="MySQL")
-        img = np.zeros((100, 100), dtype=np.uint8)
-
-        result = helper.flush(120000, img)
-
-        self.assertIsNotNone(result)
-        command, args = result
-        self.assertIn("INSERT INTO IMG_SNAPSHOTS", command)
-        self.assertEqual(len(args), 3)  # MySQL: (id, t, img)
-        self.assertEqual(args[0], 0)  # ID
-        self.assertEqual(args[1], 120000)  # timestamp
-        self.assertIsInstance(args[2], bytes)  # JPEG bytes
 
     def test_flush_sqlite_generates_correct_command(self):
         """Test flush generates correct SQLite INSERT command."""
@@ -340,17 +281,17 @@ class TestDAMFileHelper(unittest.TestCase):
             self.assertIsNone(helper._last_positions[i])
 
     def test_make_dam_file_sql_fields(self):
-        """Test make_dam_file_sql_fields generates correct SQL."""
+        """Test make_dam_file_sql_fields generates correct SQL (SQLite)."""
         helper = DAMFileHelper(n_rois=3)
 
         fields = helper.make_dam_file_sql_fields()
 
-        self.assertIn("id INT", fields)
-        self.assertIn("date CHAR", fields)
-        self.assertIn("time CHAR", fields)
-        self.assertIn("ROI_1 SMALLINT", fields)
-        self.assertIn("ROI_2 SMALLINT", fields)
-        self.assertIn("ROI_3 SMALLINT", fields)
+        self.assertIn("id INTEGER", fields)
+        self.assertIn("date TEXT", fields)
+        self.assertIn("time TEXT", fields)
+        self.assertIn("ROI_1 INTEGER", fields)
+        self.assertIn("ROI_2 INTEGER", fields)
+        self.assertIn("ROI_3 INTEGER", fields)
 
     def test_compute_distance_returns_zero_on_first_call(self):
         """Test _compute_distance_for_roi returns 0 for first position."""

@@ -288,7 +288,6 @@ class BugReportAPI(BaseAPI):
         services = {}
         service_names = [
             "ethoscope_node",
-            "ethoscope_backup_mysql",
             "ethoscope_backup_unified",
             "ethoscope_backup_sqlite",
             "ethoscope_backup_video",
@@ -424,21 +423,6 @@ class BugReportAPI(BaseAPI):
         backup_status = {}
 
         systemctl = getattr(self.server, "systemctl", "/usr/bin/systemctl")
-
-        # MySQL backup service
-        try:
-            result = subprocess.run(
-                [systemctl, "is-active", "ethoscope_backup_mysql"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            backup_status["mysql"] = {
-                "available": result.returncode == 0,
-                "status": result.stdout.strip(),
-            }
-        except Exception as e:
-            backup_status["mysql"] = {"available": False, "error": str(e)}
 
         # Unified backup service (rsync-based)
         try:

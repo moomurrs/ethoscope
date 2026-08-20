@@ -204,12 +204,12 @@ class TestNodeAPI(unittest.TestCase):
         """Test getting daemon status."""
         with patch.object(self.api, "_get_daemon_status") as mock_get_daemons:
             mock_get_daemons.return_value = {
-                "ethoscope_backup_mysql": {"active": "active"}
+                "ethoscope_backup_unified": {"active": "active"}
             }
 
             result = self.api._node_info("daemons")
 
-            self.assertEqual(result, {"ethoscope_backup_mysql": {"active": "active"}})
+            self.assertEqual(result, {"ethoscope_backup_unified": {"active": "active"}})
             mock_get_daemons.assert_called_once()
 
     def test_node_info_system_info(self):
@@ -459,9 +459,9 @@ class TestNodeAPI(unittest.TestCase):
         result = self.api._get_daemon_status()
 
         # Check a few daemons
-        self.assertEqual(result["ethoscope_backup_mysql"]["active"], "active")
-        self.assertFalse(result["ethoscope_backup_mysql"]["not_available"])
-        self.assertFalse(result["ethoscope_backup_mysql"]["docker_managed"])
+        self.assertEqual(result["ethoscope_backup_unified"]["active"], "active")
+        self.assertFalse(result["ethoscope_backup_unified"]["not_available"])
+        self.assertFalse(result["ethoscope_backup_unified"]["docker_managed"])
 
     @patch("ethoscope_node.api.node_api.NodeAPI._check_container_health")
     def test_get_daemon_status_docker_with_containers(self, mock_health):
@@ -472,9 +472,9 @@ class TestNodeAPI(unittest.TestCase):
         result = self.api._get_daemon_status()
 
         # Daemons with docker_container should be active and docker_managed
-        self.assertEqual(result["ethoscope_backup_mysql"]["active"], "active")
-        self.assertFalse(result["ethoscope_backup_mysql"]["not_available"])
-        self.assertTrue(result["ethoscope_backup_mysql"]["docker_managed"])
+        self.assertEqual(result["ethoscope_backup_unified"]["active"], "active")
+        self.assertFalse(result["ethoscope_backup_unified"]["not_available"])
+        self.assertTrue(result["ethoscope_backup_unified"]["docker_managed"])
 
         # git-daemon.socket and vsftpd now have containers
         self.assertEqual(result["git-daemon.socket"]["active"], "active")
@@ -509,9 +509,9 @@ class TestNodeAPI(unittest.TestCase):
 
         result = self.api._get_daemon_status()
 
-        self.assertEqual(result["ethoscope_backup_mysql"]["active"], "inactive")
-        self.assertFalse(result["ethoscope_backup_mysql"]["not_available"])
-        self.assertTrue(result["ethoscope_backup_mysql"]["docker_managed"])
+        self.assertEqual(result["ethoscope_backup_unified"]["active"], "inactive")
+        self.assertFalse(result["ethoscope_backup_unified"]["not_available"])
+        self.assertTrue(result["ethoscope_backup_unified"]["docker_managed"])
 
     @patch("os.popen")
     def test_get_daemon_status_exception(self, mock_popen):
@@ -656,7 +656,7 @@ class TestNodeAPI(unittest.TestCase):
         """Test toggling daemon status."""
         mock_get_json.return_value = {
             "action": "toggledaemon",
-            "daemon_name": "ethoscope_backup_mysql",
+            "daemon_name": "ethoscope_backup_unified",
             "status": True,
         }
 
@@ -666,7 +666,7 @@ class TestNodeAPI(unittest.TestCase):
             result = self.api._node_actions()
 
             self.assertEqual(result, "Daemon started")
-            mock_toggle.assert_called_once_with("ethoscope_backup_mysql", True)
+            mock_toggle.assert_called_once_with("ethoscope_backup_unified", True)
 
     @patch("ethoscope_node.api.node_api.BaseAPI.get_request_json")
     def test_node_actions_toggle_tunnel(self, mock_get_json):
@@ -809,7 +809,7 @@ class TestNodeAPI(unittest.TestCase):
         mock_popen.return_value = mock_file
 
         with patch.object(self.api.logger, "info") as mock_log:
-            result = self.api._toggle_daemon("ethoscope_backup_mysql", True)
+            result = self.api._toggle_daemon("ethoscope_backup_unified", True)
 
             self.assertEqual(result, "Daemon started")
             mock_log.assert_called_once()
@@ -825,7 +825,7 @@ class TestNodeAPI(unittest.TestCase):
         mock_popen.return_value = mock_file
 
         with patch.object(self.api.logger, "info") as mock_log:
-            result = self.api._toggle_daemon("ethoscope_backup_mysql", False)
+            result = self.api._toggle_daemon("ethoscope_backup_unified", False)
 
             self.assertEqual(result, "Daemon stopped")
             mock_log.assert_called_once()
@@ -835,7 +835,7 @@ class TestNodeAPI(unittest.TestCase):
         """Test toggling daemon is blocked in Docker mode."""
         self.mock_server.is_dockerized = True
 
-        result = self.api._toggle_daemon("ethoscope_backup_mysql", True)
+        result = self.api._toggle_daemon("ethoscope_backup_unified", True)
 
         self.assertIn("Docker Compose", result)
 

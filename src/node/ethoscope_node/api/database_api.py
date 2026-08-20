@@ -76,19 +76,6 @@ class DatabaseAPI(BaseAPI):
                             }
                         )
 
-            # Add MariaDB databases
-            if databases_info.get("MariaDB"):
-                for db_name, db_info in databases_info["MariaDB"].items():
-                    db_list.append(
-                        {
-                            "name": db_name,
-                            "active": True,
-                            "size": db_info.get("db_size_bytes", 0),
-                            "status": db_info.get("db_status", "unknown"),
-                            "type": "MariaDB",
-                        }
-                    )
-
             # Sort by name (newest first)
             db_list.sort(key=lambda x: x["name"], reverse=True)
 

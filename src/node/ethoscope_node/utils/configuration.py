@@ -188,9 +188,7 @@ class EthoscopeConfiguration:
             "container_name": "ethoscope-cloudflare-tunnel",
             # authentication_enabled removed from tunnel section
         },
-        "device_options": {
-            "enable_mysql_result_writer": False,  # Set to True to enable MariaDB/MySQL result writer option
-        },
+        "device_options": {},
     }
 
     REQUIRED_SECTIONS = [
@@ -1226,24 +1224,9 @@ class EthoscopeConfiguration:
             self._logger.error(error_msg)
             raise ConfigurationError(error_msg) from e
 
-    def is_mysql_result_writer_enabled(self) -> bool:
-        """
-        Check if MySQL/MariaDB result writer is enabled in device options.
-
-        Returns:
-            True if MySQL result writer should be available as an option, False otherwise
-        """
-        device_options = self._settings.get(
-            "device_options", self.DEFAULT_SETTINGS["device_options"]
-        )
-        return device_options.get("enable_mysql_result_writer", False)
-
     def get_device_options(self) -> dict[str, Any]:
         """
         Get all device options configuration.
-
-        Returns:
-            Device options configuration dictionary
         """
         return self._settings.get(
             "device_options", self.DEFAULT_SETTINGS["device_options"]
@@ -1251,21 +1234,14 @@ class EthoscopeConfiguration:
 
     def update_device_options(self, config_data: dict[str, Any]) -> dict[str, Any]:
         """
-        Update device options configuration.
-
-        Args:
-            config_data: Dictionary of device option settings to update
-
-        Returns:
-            Updated device options configuration
+        Update device options configuration (no MySQL options remain).
         """
         if "device_options" not in self._settings:
             self._settings["device_options"] = self.DEFAULT_SETTINGS[
                 "device_options"
             ].copy()
 
-        # Validate and update device options
-        allowed_keys = ["enable_mysql_result_writer"]
+        allowed_keys: list[str] = []
 
         for key, value in config_data.items():
             if key in allowed_keys:

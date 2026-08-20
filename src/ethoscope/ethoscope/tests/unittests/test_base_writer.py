@@ -125,13 +125,6 @@ class TestSensorDataHelper(unittest.TestCase):
         sensor.sensor_types = {"temperature": "FLOAT", "humidity": "FLOAT"}
         return sensor
 
-    def test_init_mysql(self):
-        """Test MySQL database type initialization."""
-        sensor = self._make_sensor()
-        helper = SensorDataHelper(sensor, database_type="MySQL")
-        self.assertEqual(helper._table_name, "SENSORS")
-        self.assertIn("id", helper._table_headers)
-
     def test_init_sqlite(self):
         """Test SQLite database type initialization."""
         sensor = self._make_sensor()
@@ -148,7 +141,7 @@ class TestSensorDataHelper(unittest.TestCase):
     def test_flush_returns_command(self):
         """Test flush returns SQL command when period elapsed."""
         sensor = self._make_sensor()
-        helper = SensorDataHelper(sensor, period=120.0, database_type="MySQL")
+        helper = SensorDataHelper(sensor, period=120.0, database_type="SQLite3")
         # First flush at t=0
         helper.flush(0)
         # Second flush at t > period
@@ -172,7 +165,7 @@ class TestSensorDataHelper(unittest.TestCase):
     def test_create_command(self):
         """Test create_command generates proper SQL."""
         sensor = self._make_sensor()
-        helper = SensorDataHelper(sensor, database_type="MySQL")
+        helper = SensorDataHelper(sensor, database_type="SQLite3")
         cmd = helper.create_command
         self.assertIn("id", cmd)
         self.assertIn("t", cmd)
@@ -183,7 +176,7 @@ class TestSensorDataHelper(unittest.TestCase):
         self.assertEqual(helper.table_name, "SENSORS")
 
     def test_sensor_type_conversion_sqlite(self):
-        """Test MySQL types are converted to SQLite equivalents."""
+        """Test sensor types are converted to SQLite equivalents."""
         sensor = Mock()
         sensor.sensor_types = {
             "temp": "FLOAT",
@@ -205,10 +198,6 @@ class TestSensorDataHelper(unittest.TestCase):
 class TestImgSnapshotHelper(unittest.TestCase):
     """Test ImgSnapshotHelper."""
 
-    def test_init_mysql(self):
-        helper = ImgSnapshotHelper(database_type="MySQL")
-        self.assertEqual(helper._table_headers["img"], "LONGBLOB")
-
     def test_init_sqlite(self):
         helper = ImgSnapshotHelper(database_type="SQLite3")
         self.assertEqual(helper._table_headers["img"], "BLOB")
@@ -218,10 +207,10 @@ class TestImgSnapshotHelper(unittest.TestCase):
         self.assertEqual(helper.table_name, "IMG_SNAPSHOTS")
 
     def test_create_command(self):
-        helper = ImgSnapshotHelper(database_type="MySQL")
+        helper = ImgSnapshotHelper(database_type="SQLite3")
         cmd = helper.create_command
         self.assertIn("img", cmd)
-        self.assertIn("LONGBLOB", cmd)
+        self.assertIn("BLOB", cmd)
 
     def test_flush_not_time_yet(self):
         """Test flush returns None when period hasn't elapsed."""
@@ -473,8 +462,8 @@ class TestBaseResultWriterMetadata(unittest.TestCase):
         writer._db_credentials = {"name": "/tmp/test.db"}
         return writer
 
-    def test_insert_metadata_sqlite(self):
-        """Test metadata insertion with SQLite placeholders."""
+    def test_insert_metadata_sqlite_multiple_keys(self):
+        """Test metadata insertion with multiple SQLite keys."""
         writer = self._make_writer_shell()
         writer._metadata = {"machine_name": "test", "version": "1.0"}
         writer._database_type = "SQLite3"
@@ -482,22 +471,22 @@ class TestBaseResultWriterMetadata(unittest.TestCase):
         writer._insert_metadata()
         self.assertEqual(writer._queue.put.call_count, 2)
 
-    def test_insert_metadata_mysql(self):
-        """Test metadata insertion with MySQL placeholders."""
+    def test_insert_metadata_sqlite(self):
+        """Test metadata insertion with SQLite placeholders."""
         writer = self._make_writer_shell()
         writer._metadata = {"key": "value"}
-        writer._database_type = "MySQL"
+        writer._database_type = "SQLite3"
 
         writer._insert_metadata()
         call_args = writer._queue.put.call_args[0][0]
-        self.assertIn("%s", call_args[0])
+        self.assertIn("?", call_args[0])
 
     def test_insert_metadata_truncates_long_values(self):
         """Test metadata values exceeding max length are truncated."""
         writer = self._make_writer_shell()
         long_value = "x" * (METADATA_MAX_VALUE_LENGTH + 100)
         writer._metadata = {"big_key": long_value}
-        writer._database_type = "MySQL"
+        writer._database_type = "SQLite3"
 
         writer._insert_metadata()
         call_args = writer._queue.put.call_args[0][0]
@@ -508,7 +497,7 @@ class TestBaseResultWriterMetadata(unittest.TestCase):
         """Test complex metadata values are JSON serialized."""
         writer = self._make_writer_shell()
         writer._metadata = {"config": {"nested": True}}
-        writer._database_type = "MySQL"
+        writer._database_type = "SQLite3"
 
         writer._insert_metadata()
         # Should not crash on dict value
@@ -693,46 +682,6 @@ class TestBaseResultWriterContextManager(unittest.TestCase):
 
 class TestDbAppender(unittest.TestCase):
     """Test dbAppender database type detection."""
-
-    def test_detect_sqlite_by_extension_db(self):
-        """Test SQLite detection by .db extension."""
-        appender = object.__new__(dbAppender)
-        appender.db_credentials = {"name": "test"}
-        result = appender._detect_database_type("experiment.db")
-        self.assertEqual(result, "SQLite")
-
-    def test_detect_sqlite_by_extension_sqlite(self):
-        """Test SQLite detection by .sqlite extension."""
-        appender = object.__new__(dbAppender)
-        appender.db_credentials = {"name": "test"}
-        result = appender._detect_database_type("data.sqlite")
-        self.assertEqual(result, "SQLite")
-
-    def test_detect_sqlite_by_extension_sqlite3(self):
-        """Test SQLite detection by .sqlite3 extension."""
-        appender = object.__new__(dbAppender)
-        appender.db_credentials = {"name": "test"}
-        result = appender._detect_database_type("data.sqlite3")
-        self.assertEqual(result, "SQLite")
-
-    def test_detect_mysql_by_name_pattern(self):
-        """Test MySQL detection for simple database names."""
-        appender = object.__new__(dbAppender)
-        appender.db_credentials = {"name": "test"}
-        result = appender._detect_database_type("ethoscope_001_db")
-        self.assertEqual(result, "MySQL")
-
-    def test_detect_sqlite_by_existing_file(self):
-        """Test SQLite detection when file exists."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            temp_path = f.name
-        try:
-            appender = object.__new__(dbAppender)
-            appender.db_credentials = {"name": "test"}
-            result = appender._detect_database_type(temp_path)
-            self.assertEqual(result, "SQLite")
-        finally:
-            os.unlink(temp_path)
 
     def test_find_sqlite_database_path_direct(self):
         """Test finding database by direct path."""

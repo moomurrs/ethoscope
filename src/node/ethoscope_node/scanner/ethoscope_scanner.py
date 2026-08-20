@@ -1096,12 +1096,11 @@ class Ethoscope(BaseDevice):
     ):
         """
         Creates the full path for the backup file, gathering info from the ethoscope.
-        Now supports service-type awareness to prevent backup collisions.
 
         Args:
             timeout: Request timeout
             force_recalculate: Force recalculation of backup path
-            service_type: Type of backup service ('mariadb', 'sqlite', 'auto')
+            service_type: Type of backup service ('sqlite', 'auto') – kept for backward compat
 
         The full backup_path will look something like:
         /ethoscope_data/results/0256424ac3f545b6b3c687723085ffcb/ETHOSCOPE_025/2025-06-13_16-05-37/2025-06-13_16-05-37_0256424ac3f545b6b3c687723085ffcb.db
@@ -1114,13 +1113,11 @@ class Ethoscope(BaseDevice):
             output_db_file = None
             backup_filename = None
 
-            # Determine which backup filename to use based on service type
-            if service_type == "mariadb":
-                backup_filename = self._get_backup_filename_for_db_type("MariaDB")
-            elif service_type == "sqlite":
+            # SQLite only – determine backup filename
+            if service_type == "sqlite":
                 backup_filename = self._get_backup_filename_for_db_type("SQLite")
             else:
-                # Auto mode: use the appropriate backup filename based on database type
+                # Auto mode: use appropriate backup filename (SQLite)
                 backup_filename = self._get_appropriate_backup_filename()
 
             if backup_filename:
@@ -1163,10 +1160,10 @@ class Ethoscope(BaseDevice):
             self._info["backup_path"] = None
 
     def _get_backup_filename_for_db_type(self, db_type: str) -> str:
-        """Get backup filename for a specific database type.
+        """Get backup filename for a specific database type (SQLite only).
 
         Args:
-            db_type: Database type ("MariaDB" or "SQLite")
+            db_type: Database type ("SQLite" – kept for backward compat)
 
         Returns:
             str: Backup filename or None if not found
@@ -1214,13 +1211,13 @@ class Ethoscope(BaseDevice):
                 )
                 return backup_filename
 
-            # SECOND PRIORITY: Try to determine the active database type from experimental_info
+            # SECOND PRIORITY: Try to determine the active database type from experimental_info (SQLite only)
             experimental_info_nested = self._info.get("experimental_info", {})
             current_experimental_info = experimental_info_nested.get("current", {})
             if "selected_options" in current_experimental_info:
                 try:
                     selected_options_str = current_experimental_info["selected_options"]
-                    if "SQLiteResultWriter" in selected_options_str:
+                    if "SQLiteResultWriter" in selected_options_str or "ResultWriter" in selected_options_str:
                         self._logger.debug(
                             f"Device {self._ip}: Determined active database type: SQLite from experimental_info"
                         )
@@ -1229,15 +1226,6 @@ class Ethoscope(BaseDevice):
                         )
                         if sqlite_filename:
                             return sqlite_filename
-                    elif "ResultWriter" in selected_options_str:
-                        self._logger.debug(
-                            f"Device {self._ip}: Determined active database type: MariaDB from experimental_info"
-                        )
-                        mariadb_filename = self._get_backup_filename_for_db_type(
-                            "MariaDB"
-                        )
-                        if mariadb_filename:
-                            return mariadb_filename
                 except (KeyError, TypeError) as e:
                     self._logger.debug(
                         f"Device {self._ip}: Could not parse selected_options from experimental_info: {e}"
@@ -1247,24 +1235,17 @@ class Ethoscope(BaseDevice):
             database_info = self.databases_info()
             active_type = database_info.get("active_type", "none")
 
-            if active_type == "mariadb":
-                self._logger.debug(
-                    f"Device {self._ip}: Using active_type MariaDB from database_info"
-                )
-                return self._get_backup_filename_for_db_type("MariaDB")
-            elif active_type == "sqlite":
+            if active_type == "sqlite":
                 self._logger.debug(
                     f"Device {self._ip}: Using active_type SQLite from database_info"
                 )
                 return self._get_backup_filename_for_db_type("SQLite")
 
-            # FOURTH PRIORITY: Check databases structure for active database
+            # FOURTH PRIORITY: Check databases structure for active database (SQLite only)
             databases = self._info.get("databases", {})
 
             # Look for active databases by checking db_status = "tracking"
-            # If multiple databases have "tracking" status (e.g. old unfinalised ones),
-            # pick the most recent one by date timestamp in the filename
-            for db_type in ["SQLite", "MariaDB"]:
+            for db_type in ["SQLite"]:
                 db_type_databases = databases.get(db_type, {})
                 tracking_candidates = []
                 for _db_name, db_info in db_type_databases.items():
@@ -1288,8 +1269,7 @@ class Ethoscope(BaseDevice):
                     )
                     return best_filename
 
-            # FIFTH PRIORITY: Try SQLite first in the existence check (reverse previous priority)
-            # This is because SQLite is more commonly used for new experiments
+            # FIFTH PRIORITY: Try SQLite fallback
             if databases.get("SQLite"):
                 self._logger.debug(
                     f"Device {self._ip}: Found SQLite database, using as fallback"
@@ -1297,15 +1277,6 @@ class Ethoscope(BaseDevice):
                 sqlite_filename = self._get_backup_filename_for_db_type("SQLite")
                 if sqlite_filename:
                     return sqlite_filename
-
-            # Try MariaDB as last resort
-            if databases.get("MariaDB"):
-                self._logger.debug(
-                    f"Device {self._ip}: Found MariaDB database, using as fallback"
-                )
-                mariadb_filename = self._get_backup_filename_for_db_type("MariaDB")
-                if mariadb_filename:
-                    return mariadb_filename
 
             # FINAL FALLBACK: Use previous_backup_filename for stopped devices
             if (

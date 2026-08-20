@@ -197,67 +197,7 @@ class TestDatabaseAPI(unittest.TestCase):
         self.assertEqual(len(parsed), 1)
         self.assertEqual(parsed[0]["name"], "exists.db")
 
-    def test_cached_databases_with_mariadb(self):
-        """Test getting cached databases with MariaDB databases."""
-        self.api.devices = {
-            "device1": {
-                "name": "test_device",
-                "databases": {
-                    "MariaDB": {
-                        "maria_db1": {
-                            "db_size_bytes": 200000,
-                            "db_status": "active",
-                        },
-                        "maria_db2": {
-                            "db_size_bytes": 150000,
-                            "db_status": "active",
-                        },
-                    }
-                },
-            }
-        }
 
-        result = self.api._cached_databases("test_device")
-
-        parsed = json.loads(result)
-        self.assertEqual(len(parsed), 2)
-        # Should be sorted by name (reverse)
-        self.assertEqual(parsed[0]["name"], "maria_db2")
-        self.assertEqual(parsed[0]["type"], "MariaDB")
-        self.assertEqual(parsed[0]["size"], 150000)
-        self.assertEqual(parsed[1]["name"], "maria_db1")
-
-    def test_cached_databases_with_both_types(self):
-        """Test getting cached databases with both SQLite and MariaDB."""
-        self.api.devices = {
-            "device1": {
-                "name": "test_device",
-                "databases": {
-                    "SQLite": {
-                        "sqlite_db.db": {
-                            "file_exists": True,
-                            "filesize": 50000,
-                            "db_status": "active",
-                        }
-                    },
-                    "MariaDB": {
-                        "maria_db": {
-                            "db_size_bytes": 200000,
-                            "db_status": "active",
-                        }
-                    },
-                },
-            }
-        }
-
-        result = self.api._cached_databases("test_device")
-
-        parsed = json.loads(result)
-        self.assertEqual(len(parsed), 2)
-        # Check both types are present
-        types = [db["type"] for db in parsed]
-        self.assertIn("SQLite", types)
-        self.assertIn("MariaDB", types)
 
     def test_cached_databases_device_not_found(self):
         """Test getting cached databases when device doesn't exist."""

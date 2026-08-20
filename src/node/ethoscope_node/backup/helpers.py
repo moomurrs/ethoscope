@@ -2,15 +2,14 @@
 Backup Helpers Module - High-level Backup Orchestration & Management
 
 This module provides the high-level backup orchestration layer that coordinates database and
-video backups across multiple ethoscope devices. It handles device discovery, backup scheduling,
-progress tracking, and provides a web API for backup status monitoring.
+video backups across multiple ethoscope devices. Uses SQLite via rsync as the sole database backup method.
 
 Key Responsibilities:
 ====================
 
 1. BACKUP ORCHESTRATION & COORDINATION:
    - Manages parallel backup operations across multiple ethoscope devices
-   - Coordinates between database backups (via mysql_backup.py) and video file downloads
+   - Coordinates SQLite/rsync and video file downloads
    - Implements backup scheduling with configurable intervals (default: 5 minutes)
    - Handles backup prioritization and resource allocation
 
@@ -21,9 +20,9 @@ Key Responsibilities:
    - Manages backup path validation and creation
 
 3. BACKUP EXECUTION CLASSES:
-   - BackupClass: Handles database backup operations using MySQLdbToSQLite
    - VideoBackupClass: Manages video file downloads from ethoscope devices
-   - BaseBackupClass: Common functionality and status reporting for both backup types
+   - UnifiedRsyncBackupClass: Handles SQLite database and video backups via rsync
+   - BaseBackupClass: Common functionality and status reporting
 
 4. PROGRESS TRACKING & STATUS REPORTING:
    - Tracks backup progress, success/failure rates, and timing information
@@ -42,17 +41,6 @@ Key Responsibilities:
    - Provides status API endpoints for external monitoring
    - Handles backup job initiation and progress tracking
    - Supports both continuous and on-demand backup modes
-
-Classes:
-========
-- BackupStatus: Data class for tracking backup state and progress
-- BaseBackupClass: Common backup functionality and status reporting
-- BackupClass: Database backup operations (uses mysql_backup.py)
-- VideoBackupClass: Video file download and synchronization
-- GenericBackupWrapper: Main backup coordinator and threading manager
-
-This module uses mysql_backup.py for low-level database operations and is used by
-backup_tool.py for the actual backup service implementation.
 """
 
 import concurrent.futures
@@ -72,7 +60,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from ethoscope_node.backup.mysql import DBNotReadyError, MySQLdbToSQLite
 from ethoscope_node.utils.configuration import ensure_ssh_keys
 from ethoscope_node.utils.video_helpers import list_local_video_files
 
@@ -314,391 +301,6 @@ class BaseBackupClass:
     def check_sync_status(self) -> dict:
         """Abstract method to be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement check_sync_status method")
-
-
-class BackupClass(BaseBackupClass):
-    """Optimized database backup class."""
-
-    DB_CREDENTIALS = {
-        "name": "ethoscope_db",
-        "user": "node",
-        "password": "node",
-    }
-
-    # Database connection timeout (seconds)
-    DB_CONNECTION_TIMEOUT = 30
-    DB_OPERATION_TIMEOUT = 120
-
-    def __init__(self, device_info: dict, results_dir: str):
-        super().__init__(device_info, results_dir)
-        self._database_ip = os.path.basename(self._ip)
-
-    def backup(self) -> Iterator[str]:
-        """
-        Performs MariaDB database backup with improved error handling and status reporting.
-        Uses MySQLdbToSQLite's built-in max(id) incremental backup approach.
-
-        Yields:
-            str: JSON-encoded status messages with progress updates
-        """
-        start_time = time.time()
-
-        try:
-            self._logger.info(f"[{self._device_id}] === MARIADB BACKUP STARTING ===")
-            yield self._yield_status(
-                "info", f"MariaDB backup initiated for device {self._device_id}"
-            )
-
-            # Validate device has MariaDB database
-            if not self._validate_mariadb_database():
-                error_msg = f"Device {self._device_id} does not have a MariaDB database - skipping MariaDB backup"
-                self._logger.warning(f"[{self._device_id}] {error_msg}")
-                yield self._yield_status("warning", error_msg)
-                return False
-
-            # Validate backup path using MariaDB metadata
-            self._logger.info(f"[{self._device_id}] Validating MariaDB backup path...")
-            backup_path = self._get_mariadb_backup_path()
-            db_name = f"{self._device_name}_db"
-
-            self._logger.info(
-                f"[{self._device_id}] Backup path validated: {backup_path}"
-            )
-            yield self._yield_status(
-                "info", f"Preparing to back up database '{db_name}' to {backup_path}"
-            )
-
-            # Perform incremental backup using MySQLdbToSQLite's built-in max(id) logic
-            self._logger.info(
-                f"[{self._device_id}] Starting incremental database backup (max ID approach)..."
-            )
-            success, backup_stats = self._perform_database_backup(backup_path, db_name)
-
-            elapsed_time = time.time() - start_time
-
-            if success:
-                self._logger.info(
-                    f"[{self._device_id}] === DATABASE BACKUP COMPLETED SUCCESSFULLY in {elapsed_time:.1f}s ==="
-                )
-                yield self._yield_status(
-                    "success",
-                    f"Backup completed successfully for device {self._device_id} in {elapsed_time:.1f}s",
-                )
-                return True
-            else:
-                self._logger.error(
-                    f"[{self._device_id}] === DATABASE BACKUP FAILED after {elapsed_time:.1f}s ==="
-                )
-                yield self._yield_status(
-                    "error",
-                    f"Backup failed for device {self._device_id} after {elapsed_time:.1f}s",
-                )
-                return False
-
-        except DBNotReadyError as e:
-            elapsed_time = time.time() - start_time
-            warning_msg = f"Database not ready for device {self._device_id}, will retry later (after {elapsed_time:.1f}s)"
-            self._logger.warning(f"[{self._device_id}] {warning_msg}: {e}")
-            yield self._yield_status("warning", warning_msg)
-            return False
-
-        except BackupError as e:
-            elapsed_time = time.time() - start_time
-            self._logger.error(
-                f"[{self._device_id}] BackupError after {elapsed_time:.1f}s: {e}"
-            )
-            yield self._yield_status(
-                "error", f"Backup error after {elapsed_time:.1f}s: {str(e)}"
-            )
-            return False
-
-        except Exception as e:
-            elapsed_time = time.time() - start_time
-            error_msg = f"Unexpected error during backup for device {self._device_id} after {elapsed_time:.1f}s: {str(e)}"
-            self._logger.error(f"[{self._device_id}] {error_msg}")
-            self._logger.error(f"[{self._device_id}] Full traceback:", exc_info=True)
-            yield self._yield_status("error", error_msg)
-            return False
-
-    def _validate_mariadb_database(self) -> bool:
-        """Validate that the device has a MariaDB database available for backup."""
-        try:
-            # Check the new nested databases structure
-            databases = self._device_info.get("databases", {})
-            mariadb_databases = databases.get("MariaDB", {})
-
-            # Check if there are any MariaDB databases
-            if len(mariadb_databases) > 0:
-                self._logger.info(
-                    f"[{self._device_id}] MariaDB database(s) validated for backup: {list(mariadb_databases.keys())}"
-                )
-                return True
-
-            self._logger.info(
-                f"[{self._device_id}] No MariaDB databases found in nested structure"
-            )
-            return False
-
-        except Exception as e:
-            self._logger.error(
-                f"[{self._device_id}] Error validating MariaDB database: {e}"
-            )
-            return False
-
-    def _get_mariadb_backup_path(self) -> str:
-        """Get and validate backup path using MariaDB metadata from nested databases structure."""
-        try:
-            # Get MariaDB databases from nested structure
-            databases = self._device_info.get("databases", {})
-            mariadb_databases = databases.get("MariaDB", {})
-
-            if not mariadb_databases:
-                raise BackupError(
-                    f"No MariaDB databases found in nested structure for device {self._device_id}"
-                )
-
-            # For now, take the first MariaDB database (typically there's only one)
-            # In the future, we might need to handle multiple MariaDB databases
-            db_name = list(mariadb_databases.keys())[0]
-            db_info = mariadb_databases[db_name]
-
-            self._logger.info(f"[{self._device_id}] Using MariaDB database: {db_name}")
-
-            # Extract backup path from database info
-            if "path" in db_info:
-                backup_path = db_info["path"]
-                self._logger.info(
-                    f"[{self._device_id}] Using MariaDB path: {backup_path}"
-                )
-            else:
-                # Construct path from backup_filename and device info
-                backup_filename = db_info.get("backup_filename", "")
-                if not backup_filename:
-                    raise BackupError(
-                        f"No backup filename found for MariaDB database {db_name}"
-                    )
-
-                # Extract components from backup filename
-                filename_parts = backup_filename.replace(".db", "").split("_")
-                if len(filename_parts) >= 3:
-                    backup_date = filename_parts[0]
-                    backup_time = filename_parts[1]
-                    etho_id = "_".join(filename_parts[2:])
-                    backup_path = f"{etho_id}/{self._device_name}/{backup_date}_{backup_time}/{backup_filename}"
-                else:
-                    raise BackupError(
-                        f"Invalid MariaDB backup filename format: {backup_filename}"
-                    )
-
-            full_backup_path = os.path.join(self._results_dir, backup_path)
-
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(full_backup_path), exist_ok=True)
-
-            return full_backup_path
-
-        except Exception as e:
-            self._logger.error(
-                f"[{self._device_id}] Error getting MariaDB backup path: {e}"
-            )
-            raise BackupError(f"Failed to get MariaDB backup path: {e}") from e
-
-    def _get_backup_path(self) -> str:
-        """Get and validate backup path (legacy method - use _get_mariadb_backup_path instead)."""
-        return self._get_mariadb_backup_path()
-
-    def _perform_database_backup(
-        self, backup_path: str, db_name: str
-    ) -> tuple[bool, dict]:
-        """
-        Perform the actual database backup operation using MySQLdbToSQLite's
-        built-in incremental max(id) approach to prevent duplicates.
-        """
-        backup_stats = {}
-
-        try:
-            self._logger.info(
-                f"[{self._device_id}] Initializing MySQL to SQLite mirror connection..."
-            )
-            self._logger.info(
-                f"[{self._device_id}] Target: {backup_path}, DB: {db_name}, Host: {self._database_ip}"
-            )
-
-            # Initialize MySQL to SQLite mirror (handles incremental updates automatically)
-            mirror = MySQLdbToSQLite(
-                backup_path,
-                db_name,
-                remote_host=self._database_ip,
-                remote_user=self.DB_CREDENTIALS["user"],
-                remote_pass=self.DB_CREDENTIALS["password"],
-            )
-            self._logger.info(
-                f"[{self._device_id}] MySQL mirror initialized successfully"
-            )
-
-            # Update ROI tables using built-in max(id) incremental logic
-            self._logger.info(
-                f"[{self._device_id}] Starting incremental ROI tables update (max ID approach)..."
-            )
-            mirror.update_all_tables()
-            self._logger.info(
-                f"[{self._device_id}] Incremental ROI tables update completed"
-            )
-
-            # Verify backup integrity
-            self._logger.info(f"[{self._device_id}] Starting database comparison...")
-            comparison_status = mirror.compare_databases()
-            self._logger.info(
-                f"[{self._device_id}] Database comparison: {comparison_status:.2f}% match"
-            )
-
-            backup_stats["comparison_percentage"] = comparison_status
-            backup_stats["backup_success"] = comparison_status > 0
-
-            # Check for data duplication
-            self._logger.info(f"[{self._device_id}] Checking for data duplication...")
-            duplication_found = self._check_data_duplication(backup_path)
-            backup_stats["data_duplication"] = duplication_found
-
-            if comparison_status > 0:
-                self._logger.info(
-                    f"[{self._device_id}] Incremental database backup successful (match: {comparison_status:.2f}%)"
-                )
-            else:
-                self._logger.warning(
-                    f"[{self._device_id}] Database backup may have issues (match: {comparison_status:.2f}%)"
-                )
-
-            return comparison_status > 0, backup_stats
-
-        except Exception as e:
-            backup_stats["error"] = str(e)
-            self._logger.error(f"[{self._device_id}] Database backup failed: {e}")
-            self._logger.error(f"[{self._device_id}] Full traceback:", exc_info=True)
-            raise BackupError(f"Database backup failed: {e}") from e
-
-    def _check_data_duplication(self, backup_path: str) -> bool:
-        """
-        Check for data duplication in METADATA and VAR_MAP tables.
-
-        Args:
-            backup_path: Path to the SQLite backup file
-
-        Returns:
-            bool: True if duplicates found in either table, False otherwise
-        """
-        try:
-            self._logger.info(
-                f"[{self._device_id}] Checking for data duplication in backup database..."
-            )
-
-            with sqlite3.connect(backup_path) as conn:
-                cursor = conn.cursor()
-
-                # Check METADATA table for duplicates
-                metadata_duplicates = False
-                try:
-                    cursor.execute("SELECT COUNT(*) FROM METADATA")
-                    total_metadata = cursor.fetchone()[0]
-
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM (SELECT DISTINCT field, value FROM METADATA)"
-                    )
-                    distinct_metadata = cursor.fetchone()[0]
-
-                    metadata_duplicates = total_metadata > distinct_metadata
-                    self._logger.debug(
-                        f"[{self._device_id}] METADATA table: {total_metadata} total, {distinct_metadata} distinct"
-                    )
-
-                except sqlite3.OperationalError as e:
-                    self._logger.warning(
-                        f"[{self._device_id}] Could not check METADATA table: {e}"
-                    )
-
-                # Check VAR_MAP table for duplicates
-                varmap_duplicates = False
-                try:
-                    cursor.execute("SELECT COUNT(*) FROM VAR_MAP")
-                    total_varmap = cursor.fetchone()[0]
-
-                    cursor.execute(
-                        "SELECT COUNT(*) FROM (SELECT DISTINCT var_name, sql_type, functional_type FROM VAR_MAP)"
-                    )
-                    distinct_varmap = cursor.fetchone()[0]
-
-                    varmap_duplicates = total_varmap > distinct_varmap
-                    self._logger.debug(
-                        f"[{self._device_id}] VAR_MAP table: {total_varmap} total, {distinct_varmap} distinct"
-                    )
-
-                except sqlite3.OperationalError as e:
-                    self._logger.warning(
-                        f"[{self._device_id}] Could not check VAR_MAP table: {e}"
-                    )
-
-                duplicates_found = metadata_duplicates or varmap_duplicates
-
-                if duplicates_found:
-                    self._logger.warning(
-                        f"[{self._device_id}] Data duplication detected - METADATA: {metadata_duplicates}, VAR_MAP: {varmap_duplicates}"
-                    )
-                else:
-                    self._logger.info(
-                        f"[{self._device_id}] No data duplication detected"
-                    )
-
-                return duplicates_found
-
-        except Exception as e:
-            self._logger.error(
-                f"[{self._device_id}] Error checking data duplication: {e}"
-            )
-            self._logger.error(f"[{self._device_id}] Full traceback:", exc_info=True)
-            return False  # Return False on error to avoid false positives
-
-    def get_sqlite_table_counts(self, backup_path: str) -> dict[str, int]:
-        """
-        Get row counts for all tables in a SQLite database file.
-
-        Args:
-            backup_path: Path to the SQLite database file
-
-        Returns:
-            Dictionary mapping table names to row counts
-        """
-        table_counts = {}
-        try:
-            with sqlite3.connect(backup_path) as conn:
-                cursor = conn.cursor()
-
-                # Get all table names
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                tables = [row[0] for row in cursor.fetchall()]
-
-                # Get row count for each table
-                for table in tables:
-                    try:
-                        cursor.execute(f"SELECT COUNT(*) FROM `{table}`")
-                        count = cursor.fetchone()[0]
-                        table_counts[table] = count
-                    except sqlite3.Error as e:
-                        self._logger.warning(
-                            f"[{self._device_id}] Could not get count for table {table}: {e}"
-                        )
-                        table_counts[table] = 0
-
-        except sqlite3.Error as e:
-            self._logger.warning(
-                f"[{self._device_id}] Failed to read backup database {backup_path}: {e}"
-            )
-
-        return table_counts
-
-    def check_sync_status(self) -> dict:
-        """Check synchronization status of the database backup."""
-        # TODO: Implement database sync status checking
-        return {"tracking_db": {}}
 
 
 class VideoBackupClass(BaseBackupClass):
@@ -1828,15 +1430,17 @@ class GenericBackupWrapper(threading.Thread):
 
             # Incremental backups are safe - no need to throttle retry attempts
 
-            # Create appropriate backup job
+            # Create appropriate backup job (SQLite/rsync only)
             if self._is_video_backup:
                 self._logger.info(f"Creating VideoBackupClass for device {device_id}")
                 backup_job = VideoBackupClass(device_info, self._results_dir)
             else:
                 self._logger.info(
-                    f"Creating BackupClass (database) for device {device_id}"
+                    f"Creating UnifiedRsyncBackupClass (database) for device {device_id}"
                 )
-                backup_job = BackupClass(device_info, self._results_dir)
+                backup_job = UnifiedRsyncBackupClass(
+                    device_info, self._results_dir
+                )
 
             self._logger.info(
                 f"Backup job object created successfully for device {device_id}"
@@ -2447,14 +2051,6 @@ class GenericBackupWrapper(threading.Thread):
             # Use the existing initiate_backup_job method which already has error handling
             return self.initiate_backup_job(device)
 
-        except DBNotReadyError as e:
-            # Non-critical error - device database not ready
-            self._logger.warning(
-                f"Device {device_name} database not ready, will retry later: {e}"
-            )
-            self._handle_backup_failure(device_id, f"Database not ready: {str(e)}")
-            return False
-
         except Exception as e:
             # Critical error - comprehensive logging and recovery
             self._logger.error(
@@ -2711,9 +2307,9 @@ def _fallback_database_discovery(
         base_directory: Base data directory (e.g., '/ethoscope_data')
 
     Returns:
-        dict: Databases dictionary with SQLite and MariaDB information
+        dict: Databases dictionary with SQLite information
     """
-    databases = {"SQLite": {}, "MariaDB": {}}
+    databases = {"SQLite": {}}
 
     # Scan for SQLite files in results directory
     data_dir = base_directory
@@ -3257,13 +2853,13 @@ def get_device_backup_info(
 
     # Enhance with rsync backup service file sizes if available
     databases = _enhance_databases_with_rsync_info(device_id, databases, base_directory)
-    
+
     # Filter out SQLite entries with no file size (not yet written or still pending)
-    if "SQLite" in databases:
+    if "SQLite" in databases and isinstance(databases["SQLite"], dict):
         databases["SQLite"] = {
             name: info
             for name, info in databases["SQLite"].items()
-            if info.get("filesize", 0) > 0
+            if isinstance(info, dict) and info.get("filesize", info.get("size", 0)) > 0
         }
 
     # Get device-specific backup sizes for accurate reporting
@@ -3273,12 +2869,6 @@ def get_device_backup_info(
         "device_id": device_id,
         "databases": databases,
         "backup_status": {
-            "mysql": {
-                "available": False,
-                "database_count": 0,
-                "databases": [],
-                "total_size_bytes": 0,
-            },
             "sqlite": {
                 "available": False,
                 "database_count": 0,
@@ -3298,25 +2888,7 @@ def get_device_backup_info(
 
     # Count total databases
     total_db_count = 0
-    mysql_databases = []
     sqlite_databases = []
-
-    # Check for MySQL/MariaDB databases
-    if "MariaDB" in databases:
-        mariadb_dbs = databases["MariaDB"]
-        if mariadb_dbs and isinstance(mariadb_dbs, dict):
-            mysql_databases = list(mariadb_dbs.keys())
-            backup_info["backup_status"]["mysql"]["available"] = True
-            backup_info["backup_status"]["mysql"]["database_count"] = len(
-                mysql_databases
-            )
-            backup_info["backup_status"]["mysql"]["databases"] = mysql_databases
-            # For MySQL, we could calculate exported backup size specifically, but for now use results size
-            # This represents the size of data that would be backed up from this device's database
-            backup_info["backup_status"]["mysql"]["total_size_bytes"] = device_sizes[
-                "results_size"
-            ]
-            total_db_count += len(mysql_databases)
 
     # Check for SQLite databases
     if "SQLite" in databases:
@@ -3357,13 +2929,9 @@ def get_device_backup_info(
 
     backup_info["backup_status"]["total_databases"] = total_db_count
 
-    # Determine recommended backup type
-    # Prioritize SQLite/rsync (modern default) over MySQL (legacy)
-    # Reason: SQLite is the default for new experiments, and rsync also handles videos
+    # Determine recommended backup type – SQLite/rsync only
     if backup_info["backup_status"]["sqlite"]["available"]:
         backup_info["recommended_backup_type"] = "rsync"
-    elif backup_info["backup_status"]["mysql"]["available"]:
-        backup_info["recommended_backup_type"] = "mysql"
     else:
         backup_info["recommended_backup_type"] = "none"
 

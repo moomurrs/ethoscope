@@ -6,7 +6,7 @@ This directory contains Docker configuration for running a virtual ethoscope dev
 
 The virtuascope provides:
 - Virtual ethoscope device running on port 9000
-- MariaDB database for data storage
+- SQLite database for data storage (local file)
 - Simulated camera input (uses /dev/video0 if available)
 - Full ethoscope API compatibility for testing
 
@@ -48,12 +48,6 @@ The virtuascope provides:
 - **Device**: Uses `/dev/video10` created by host v4l2loopback module
 - **Host Dependency**: Requires v4l2loopback module loaded on host system
 
-### ethoscope-mariadb
-- **Image**: mariadb:latest
-- **Port**: 3306 (internal only)
-- **Function**: Database storage for tracking data
-- **Credentials**: Root password "ethoscope", configured via init script
-
 ## Configuration
 
 ### Network
@@ -64,8 +58,6 @@ The virtuascope shares the `ethoscope_network` with the node services, enabling:
 
 ### Volumes
 - `ethoscope_data`: Persistent data storage
-- `mariadb_socket`: Unix socket communication
-- `mariadb_data`: Database persistence
 
 ### Video Configuration
 The video-streamer service supports several environment variables:
@@ -88,15 +80,6 @@ Uncomment the source mount in docker-compose.yml for live code updates:
 volumes:
   - ../../:/opt/ethoscope:ro
 ```
-
-## Database Setup
-
-The MariaDB container automatically configures:
-- Root user with password "ethoscope"
-- Ethoscope user with full privileges
-- Node user with read-only access
-
-Database initialization is handled by `init_db_credentials.sql`.
 
 ## Virtuascope Mode
 

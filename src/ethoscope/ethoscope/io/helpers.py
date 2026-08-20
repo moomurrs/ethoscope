@@ -30,31 +30,24 @@ class SensorDataHelper:
 
     _table_name = "SENSORS"
 
-    def __init__(self, sensor, period=SENSOR_DEFAULT_PERIOD, database_type="MySQL"):
+    def __init__(self, sensor, period=SENSOR_DEFAULT_PERIOD, database_type="SQLite3"):
         """
         Initialize the sensor data helper.
 
         Args:
             sensor: Sensor object with read_all() method and sensor_types property
             period (float): Sampling period in seconds (default: 120s)
-            database_type (str): Database type - "MySQL" or "SQLite3" (default: "MySQL")
+            database_type (str): Database type - kept for backward compat, always SQLite3
         """
         self._period = period
         self._last_tick = 0
         self.sensor = sensor
-        self._database_type = database_type
+        self._database_type = "SQLite3"
 
-        # Set appropriate base headers based on database type
-        if database_type == "SQLite3":
-            self._base_headers = {
-                "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-                "t": "INTEGER",
-            }
-        else:  # MySQL
-            self._base_headers = {
-                "id": "INT NOT NULL AUTO_INCREMENT PRIMARY KEY",
-                "t": "INT",
-            }
+        self._base_headers = {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "t": "INTEGER",
+        }
 
         # Build table headers with appropriate data types
         self._table_headers = {
@@ -76,30 +69,18 @@ class SensorDataHelper:
         if tick == self._last_tick:
             return
         try:
-            if self._database_type == "SQLite3":
-                # For SQLite, don't specify ID - let AUTOINCREMENT handle it
-                values = [str(v) for v in ((int(t),) + self.sensor.read_all())]
-                columns = list(self._table_headers.keys())[1:]  # Skip 'id' column
-                cmd = (
-                    "INSERT into "
-                    + self._table_name
-                    + " ("
-                    + ",".join(columns)
-                    + ")"
-                    + " VALUES ("
-                    + ",".join(values)
-                    + ")"
-                )
-            else:
-                # For MySQL, explicit ID=0 is fine (will be auto-incremented)
-                values = [str(v) for v in ((0, int(t)) + self.sensor.read_all())]
-                cmd = (
-                    "INSERT into "
-                    + self._table_name
-                    + " VALUES ("
-                    + ",".join(values)
-                    + ")"
-                )
+            values = [str(v) for v in ((int(t),) + self.sensor.read_all())]
+            columns = list(self._table_headers.keys())[1:]  # Skip 'id' column
+            cmd = (
+                "INSERT into "
+                + self._table_name
+                + " ("
+                + ",".join(columns)
+                + ")"
+                + " VALUES ("
+                + ",".join(values)
+                + ")"
+            )
             self._last_tick = tick
             return cmd, None
 
@@ -115,30 +96,26 @@ class SensorDataHelper:
 
     def _get_sensor_types_for_database(self):
         """
-        Convert sensor types to appropriate database format.
+        Convert sensor types to appropriate database format (SQLite only).
 
         Returns:
-            dict: Sensor field names mapped to database-appropriate data types
+            dict: Sensor field names mapped to SQLite data types
         """
         if not hasattr(self.sensor, "sensor_types"):
             return {}
 
         sensor_types = {}
         for field_name, mysql_type in self.sensor.sensor_types.items():
-            if self._database_type == "SQLite3":
-                # Convert MySQL types to SQLite equivalents
-                if mysql_type.upper() in ["FLOAT", "DOUBLE"]:
-                    sqlite_type = "REAL"
-                elif mysql_type.upper().startswith("INT"):
-                    sqlite_type = "INTEGER"
-                elif mysql_type.upper().startswith(("CHAR", "VARCHAR", "TEXT")):
-                    sqlite_type = "TEXT"
-                else:
-                    sqlite_type = "TEXT"  # Default fallback
-                sensor_types[field_name] = sqlite_type
+            # Convert MySQL types to SQLite equivalents
+            if mysql_type.upper() in ["FLOAT", "DOUBLE"]:
+                sqlite_type = "REAL"
+            elif mysql_type.upper().startswith("INT"):
+                sqlite_type = "INTEGER"
+            elif mysql_type.upper().startswith(("CHAR", "VARCHAR", "TEXT")):
+                sqlite_type = "TEXT"
             else:
-                # Use original MySQL types
-                sensor_types[field_name] = mysql_type
+                sqlite_type = "TEXT"  # Default fallback
+            sensor_types[field_name] = sqlite_type
 
         return sensor_types
 
@@ -164,32 +141,24 @@ class ImgSnapshotHelper:
 
     _table_name = "IMG_SNAPSHOTS"
 
-    def __init__(self, period=IMG_SNAPSHOT_DEFAULT_PERIOD, database_type="MySQL"):
+    def __init__(self, period=IMG_SNAPSHOT_DEFAULT_PERIOD, database_type="SQLite3"):
         """
         Initialize the image snapshot helper.
 
         Args:
             period (float): Snapshot interval in seconds (default: 300s/5min)
-            database_type (str): Database type - "MySQL" or "SQLite3" (default: "MySQL")
+            database_type (str): Database type - kept for backward compat, always SQLite3
         """
         self._period = period
         self._last_tick = 0
-        self._database_type = database_type
+        self._database_type = "SQLite3"
         self._tmp_file = tempfile.mktemp(prefix="ethoscope_", suffix=".jpg")
 
-        # Set appropriate table headers based on database type
-        if database_type == "SQLite3":
-            self._table_headers = {
-                "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-                "t": "INTEGER",
-                "img": "BLOB",
-            }
-        else:  # MySQL
-            self._table_headers = {
-                "id": "INT NOT NULL AUTO_INCREMENT PRIMARY KEY",
-                "t": "INT",
-                "img": "LONGBLOB",
-            }
+        self._table_headers = {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "t": "INTEGER",
+            "img": "BLOB",
+        }
 
     @property
     def table_name(self):
@@ -228,14 +197,8 @@ class ImgSnapshotHelper:
         with open(self._tmp_file, "rb") as f:
             bstring = f.read()
 
-        if self._database_type == "SQLite3":
-            # For SQLite, don't specify ID - let AUTOINCREMENT handle it
-            cmd = "INSERT INTO " + self._table_name + "(t,img) VALUES (?,?)"
-            args = (int(t), bstring)
-        else:
-            # For MySQL, explicit ID=0 is fine (will be auto-incremented)
-            cmd = "INSERT INTO " + self._table_name + "(id,t,img) VALUES (%s,%s,%s)"
-            args = (0, int(t), bstring)
+        cmd = "INSERT INTO " + self._table_name + "(t,img) VALUES (?,?)"
+        args = (int(t), bstring)
 
         self._last_tick = tick
         return cmd, args
@@ -270,18 +233,18 @@ class DAMFileHelper:
 
     def make_dam_file_sql_fields(self):
         """
-        Generate SQL field definitions for DAM-compatible activity table.
+        Generate SQL field definitions for DAM-compatible activity table (SQLite).
 
         Returns:
             str: Comma-separated field definitions for CREATE TABLE
         """
         fields = [
-            "id INT  NOT NULL AUTO_INCREMENT PRIMARY KEY",
-            "date CHAR(100)",
-            "time CHAR(100)",
+            "id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "date TEXT",
+            "time TEXT",
         ]
         for r in range(1, self._n_rois + 1):
-            fields.append(f"ROI_{r} SMALLINT")
+            fields.append(f"ROI_{r} INTEGER")
         fields = ",".join(fields)
         return fields
 
@@ -445,7 +408,6 @@ class NpyAppendableFile:
             return True
 
         else:
-
             with open(self.fname, "ab") as fh:
                 np.save(fh, data)
 

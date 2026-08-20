@@ -347,10 +347,9 @@ class TestDeviceBackupInfo(unittest.TestCase):
         """Set up test environment."""
         self.device_id = "test_device_789"
 
-    def test_get_device_backup_info_mysql_sqlite(self):
-        """Test backup info extraction with MySQL and SQLite databases."""
+    def test_get_device_backup_info_sqlite(self):
+        """Test backup info extraction with SQLite databases."""
         databases = {
-            "MariaDB": {"ethoscope_db": {"table1": 1000, "table2": 2000}},
             "SQLite": {
                 "file1.db": {"path": "/path/to/file1.db", "filesize": 1024000},
                 "file2.db": {"path": "/path/to/file2.db", "filesize": 2048000},
@@ -381,11 +380,6 @@ class TestDeviceBackupInfo(unittest.TestCase):
 
             backup_status = backup_info["backup_status"]
 
-            # Verify MySQL status
-            self.assertTrue(backup_status["mysql"]["available"])
-            self.assertEqual(backup_status["mysql"]["database_count"], 1)
-            self.assertEqual(backup_status["mysql"]["databases"], ["ethoscope_db"])
-
             # Verify SQLite status
             self.assertTrue(backup_status["sqlite"]["available"])
             self.assertEqual(backup_status["sqlite"]["database_count"], 2)
@@ -394,8 +388,7 @@ class TestDeviceBackupInfo(unittest.TestCase):
             )
 
             # Verify totals
-            self.assertEqual(backup_status["total_databases"], 3)
-            # SQLite/rsync preferred when both available (modern default)
+            self.assertEqual(backup_status["total_databases"], 2)
             self.assertEqual(backup_info["recommended_backup_type"], "rsync")
 
     def test_get_device_backup_info_video_only(self):
@@ -431,8 +424,7 @@ class TestDeviceBackupInfo(unittest.TestCase):
 
             backup_status = backup_info["backup_status"]
 
-            # Verify MySQL and SQLite not available
-            self.assertFalse(backup_status["mysql"]["available"])
+            # Verify SQLite not available
             self.assertFalse(backup_status["sqlite"]["available"])
 
             # Verify video available
@@ -473,7 +465,6 @@ class TestDeviceBackupInfo(unittest.TestCase):
             backup_status = backup_info["backup_status"]
 
             # All should be unavailable
-            self.assertFalse(backup_status["mysql"]["available"])
             self.assertFalse(backup_status["sqlite"]["available"])
             self.assertFalse(backup_status["video"]["available"])
             self.assertEqual(backup_status["total_databases"], 0)

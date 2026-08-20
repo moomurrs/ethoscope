@@ -1,13 +1,22 @@
-(function() {
-    var app = angular.module('flyApp', ['ngRoute', 'daterangepicker', 'angularUtils.directives.dirPagination', 'ui.bootstrap']);
+(function () {
+    var app = angular.module("flyApp", [
+        "ngRoute",
+        "daterangepicker",
+        "angularUtils.directives.dirPagination",
+        "ui.bootstrap",
+    ]);
 
-    app.filter("toArray", function() {
-        return function(obj) {
+    app.filter("toArray", function () {
+        return function (obj) {
             var result = [];
-            angular.forEach(obj, function(val, key) {
+            angular.forEach(obj, function (val, key) {
                 // Add the key as 'name' property if it doesn't exist
                 // This is needed for user dropdowns where the key is the username
-                if (typeof val === 'object' && val !== null && !val.hasOwnProperty('name')) {
+                if (
+                    typeof val === "object" &&
+                    val !== null &&
+                    !val.hasOwnProperty("name")
+                ) {
                     val.name = key;
                 }
                 result.push(val);
@@ -16,25 +25,25 @@
         };
     });
 
-    app.filter('orderObjectBy', function() {
-        return function(items, field, reverse) {
+    app.filter("orderObjectBy", function () {
+        return function (items, field, reverse) {
             var filtered = [];
-            angular.forEach(items, function(item) {
+            angular.forEach(items, function (item) {
                 filtered.push(item);
             });
-            filtered.sort(function(a, b) {
-                return (a[field] > b[field] ? 1 : -1);
+            filtered.sort(function (a, b) {
+                return a[field] > b[field] ? 1 : -1;
             });
             if (reverse) filtered.reverse();
             return filtered;
         };
     });
 
-    app.directive('ngEnter', function() {
-        return function(scope, element, attrs) {
-            element.on("keydown keypress", function(event) {
+    app.directive("ngEnter", function () {
+        return function (scope, element, attrs) {
+            element.on("keydown keypress", function (event) {
                 if (event.which === 13) {
-                    scope.$apply(function() {
+                    scope.$apply(function () {
                         scope.$eval(attrs.ngEnter);
                     });
                     event.preventDefault();
@@ -43,113 +52,114 @@
         };
     });
 
-
     // configure our routes
 
-    app.config(function($routeProvider, $locationProvider) {
+    app.config(function ($routeProvider, $locationProvider) {
         $routeProvider
 
             // route for the home page
-            .when('/', {
-                templateUrl: '/static/pages/home.html',
-                controller: 'mainController'
+            .when("/", {
+                templateUrl: "/static/pages/home.html",
+                controller: "mainController",
             })
 
             // route for the sleep monitor page
-            .when('/ethoscope/:device_id', {
-                templateUrl: '/static/pages/ethoscope.html',
-                controller: 'ethoscopeController'
+            .when("/ethoscope/:device_id", {
+                templateUrl: "/static/pages/ethoscope.html",
+                controller: "ethoscopeController",
             })
 
             // route for the management page
-            .when('/more/:option', {
-                templateUrl: '/static/pages/more.html',
-                controller: 'moreController',
+            .when("/more/:option", {
+                templateUrl: "/static/pages/more.html",
+                controller: "moreController",
             })
 
             // route for the experiments database page
-            .when('/experiments', {
-                templateUrl: '/static/pages/experiments.html',
-                controller: 'experimentsController',
+            .when("/experiments", {
+                templateUrl: "/static/pages/experiments.html",
+                controller: "experimentsController",
             })
 
             // route for the experiments database page
-            .when('/resources', {
-                templateUrl: '/static/pages/resources.html',
-                controller: 'resourcesController',
+            .when("/resources", {
+                templateUrl: "/static/pages/resources.html",
+                controller: "resourcesController",
             })
 
             // route for sensors management
-            .when('/sensors', {
-                templateUrl: '/static/pages/sensors.html',
-                controller: 'sensorsManagementController',
+            .when("/sensors", {
+                templateUrl: "/static/pages/sensors.html",
+                controller: "sensorsManagementController",
             })
 
             // route for the users management page
-            .when('/users', {
-                templateUrl: '/static/pages/users.html',
-                controller: 'usersController',
+            .when("/users", {
+                templateUrl: "/static/pages/users.html",
+                controller: "usersController",
             })
 
             // route for the incubators management page
-            .when('/incubators', {
-                templateUrl: '/static/pages/incubators.html',
-                controller: 'incubatorsController',
+            .when("/incubators", {
+                templateUrl: "/static/pages/incubators.html",
+                controller: "incubatorsController",
             })
 
             // route for the installation wizard
-            .when('/installation-wizard', {
-                templateUrl: '/static/pages/wizard/installation-wizard.html',
-                controller: 'installationWizardController',
+            .when("/installation-wizard", {
+                templateUrl: "/static/pages/wizard/installation-wizard.html",
+                controller: "installationWizardController",
             })
 
             // route for the login page
-            .when('/login', {
-                templateUrl: '/static/pages/login.html',
-                controller: 'authController',
-            })
+            .when("/login", {
+                templateUrl: "/static/pages/login.html",
+                controller: "authController",
+            });
 
         // route for the help page
         /*.when('/help', {
             templateUrl : '/static/pages/help.html',
             controller  : 'helpController'
         })*/
-        ;
         // use hash-based routing for better compatibility
         $locationProvider.html5Mode(false);
-        $locationProvider.hashPrefix('!');
+        $locationProvider.hashPrefix("!");
     });
 
     // Initialize authentication service and add route protection
-    app.run(function($rootScope, $location, AuthService, $timeout, $http) {
+    app.run(function ($rootScope, $location, AuthService, $timeout, $http) {
         // Public routes that don't require authentication
-        var publicRoutes = ['/login', '/installation-wizard'];
+        var publicRoutes = ["/login", "/installation-wizard"];
 
         // Set up global authentication state in $rootScope for header navigation
-        var updateGlobalAuthState = function() {
+        var updateGlobalAuthState = function () {
             $rootScope.isAuthenticated = AuthService.isAuthenticated;
             $rootScope.currentUser = AuthService.getCurrentUser();
             $rootScope.isAdmin = AuthService.isAdmin;
         };
 
         // Watch for authentication state changes globally
-        $rootScope.$watch(function() {
-            return AuthService.isAuthenticated;
-        }, function(newVal, oldVal) {
-            if (newVal !== oldVal) {
-                updateGlobalAuthState();
-            }
-        });
+        $rootScope.$watch(
+            function () {
+                return AuthService.isAuthenticated;
+            },
+            function (newVal, oldVal) {
+                if (newVal !== oldVal) {
+                    updateGlobalAuthState();
+                }
+            },
+        );
 
         // Initial global state
         updateGlobalAuthState();
 
         // Route change listener for authentication protection
-        $rootScope.$on('$routeChangeStart', function(event, next, current) {
+        $rootScope.$on("$routeChangeStart", function (event, next, current) {
             var path = $location.path();
 
             // Check if this is a public route
-            var isPublicRoute = publicRoutes.some(function(route) {
+            var isPublicRoute = publicRoutes.some(function (route) {
                 return path.indexOf(route) === 0;
             });
 
@@ -160,97 +170,119 @@
 
             // For all other routes, check authentication
             // Initialize authentication and check if user is authenticated
-            AuthService.initialize().then(function() {
-                updateGlobalAuthState();
+            AuthService.initialize()
+                .then(function () {
+                    updateGlobalAuthState();
 
-                // Check if authentication is actually required by checking backend
-                $http.get('/auth/session').then(function(response) {
-                    if (response.data && response.data.authenticated !== undefined) {
-                        // Authentication is configured, check if user is authenticated
-                        if (!AuthService.isAuthenticated) {
-                            // Redirect to login page
-                            event.preventDefault();
-                            $location.path('/login');
-                        }
-                    } else {
-                        // Authentication not configured, allow access
-                        // This handles the case when auth is disabled
-                    }
-                }).catch(function(error) {
-                    // If auth check fails, allow access (auth might be disabled)
+                    // Check if authentication is actually required by checking backend
+                    $http
+                        .get("/auth/session")
+                        .then(function (response) {
+                            if (
+                                response.data &&
+                                response.data.authenticated !== undefined
+                            ) {
+                                // Authentication is configured, check if user is authenticated
+                                if (!AuthService.isAuthenticated) {
+                                    // Redirect to login page
+                                    event.preventDefault();
+                                    $location.path("/login");
+                                }
+                            } else {
+                                // Authentication not configured, allow access
+                                // This handles the case when auth is disabled
+                            }
+                        })
+                        .catch(function (error) {
+                            // If auth check fails, allow access (auth might be disabled)
+                        });
+                })
+                .catch(function (error) {
+                    updateGlobalAuthState();
                 });
-            }).catch(function(error) {
-                updateGlobalAuthState();
-            });
         });
 
         // Initialize authentication service
-        AuthService.initialize().then(function(isAuthenticated) {
-            updateGlobalAuthState(); // Update global state after initialization
-        }).catch(function(error) {
-            updateGlobalAuthState();
-        });
+        AuthService.initialize()
+            .then(function (isAuthenticated) {
+                updateGlobalAuthState(); // Update global state after initialization
+            })
+            .catch(function (error) {
+                updateGlobalAuthState();
+            });
 
         // Add global logout function for header
-        $rootScope.logout = function() {
+        $rootScope.logout = function () {
             AuthService.logout();
         };
 
         // Global change PIN modal state
         $rootScope.showChangePinForm = false;
         $rootScope.changePinForm = {
-            currentPin: '',
-            newPin: '',
-            confirmPin: '',
-            isSubmitting: false
+            currentPin: "",
+            newPin: "",
+            confirmPin: "",
+            isSubmitting: false,
         };
-        $rootScope.changePinError = '';
-        $rootScope.changePinSuccess = '';
+        $rootScope.changePinError = "";
+        $rootScope.changePinSuccess = "";
 
         // Add global showChangePin function for header
-        $rootScope.showChangePin = function() {
+        $rootScope.showChangePin = function () {
             $rootScope.showChangePinForm = true;
-            $rootScope.changePinError = '';
-            $rootScope.changePinSuccess = '';
+            $rootScope.changePinError = "";
+            $rootScope.changePinSuccess = "";
             // Clear form
             $rootScope.changePinForm = {
-                currentPin: '',
-                newPin: '',
-                confirmPin: '',
-                isSubmitting: false
+                currentPin: "",
+                newPin: "",
+                confirmPin: "",
+                isSubmitting: false,
             };
         };
 
         // Add global hideChangePin function
-        $rootScope.hideChangePin = function() {
+        $rootScope.hideChangePin = function () {
             $rootScope.showChangePinForm = false;
-            $rootScope.changePinError = '';
-            $rootScope.changePinSuccess = '';
+            $rootScope.changePinError = "";
+            $rootScope.changePinSuccess = "";
         };
 
         // Add global submitChangePin function
-        $rootScope.submitChangePin = function() {
+        $rootScope.submitChangePin = function () {
             if ($rootScope.changePinForm.isSubmitting) {
                 return;
             }
 
             // Clear previous messages
-            $rootScope.changePinError = '';
-            $rootScope.changePinSuccess = '';
+            $rootScope.changePinError = "";
+            $rootScope.changePinSuccess = "";
 
             // Validate form
-            if (!$rootScope.changePinForm.currentPin || !$rootScope.changePinForm.newPin || !$rootScope.changePinForm.confirmPin) {
-                $rootScope.changePinError = 'All fields are required';
+            if (
+                !$rootScope.changePinForm.currentPin ||
+                !$rootScope.changePinForm.newPin ||
+                !$rootScope.changePinForm.confirmPin
+            ) {
+                $rootScope.changePinError = "All fields are required";
                 return;
             }
 
-            if ($rootScope.changePinForm.newPin !== $rootScope.changePinForm.confirmPin) {
-                $rootScope.changePinError = 'New PIN confirmation does not match';
+            if (
+                $rootScope.changePinForm.newPin !==
+                $rootScope.changePinForm.confirmPin
+            ) {
+                $rootScope.changePinError =
+                    "New PIN confirmation does not match";
                 return;
             }
 
-            if ($rootScope.changePinForm.newPin === $rootScope.changePinForm.currentPin) {
-                $rootScope.changePinError = 'New PIN must be different from current PIN';
+            if (
+                $rootScope.changePinForm.newPin ===
+                $rootScope.changePinForm.currentPin
+            ) {
+                $rootScope.changePinError =
+                    "New PIN must be different from current PIN";
                 return;
             }
 
@@ -259,869 +291,895 @@
             AuthService.changePin(
                 $rootScope.changePinForm.currentPin,
                 $rootScope.changePinForm.newPin,
-                $rootScope.changePinForm.confirmPin
+                $rootScope.changePinForm.confirmPin,
             )
-            .then(function(result) {
-                $rootScope.changePinForm.isSubmitting = false;
+                .then(function (result) {
+                    $rootScope.changePinForm.isSubmitting = false;
 
-                if (result.success) {
-                    $rootScope.changePinSuccess = result.message;
+                    if (result.success) {
+                        $rootScope.changePinSuccess = result.message;
 
-                    // Clear form on success
+                        // Clear form on success
+                        $rootScope.changePinForm = {
+                            currentPin: "",
+                            newPin: "",
+                            confirmPin: "",
+                            isSubmitting: false,
+                        };
+
+                        // Hide form after 3 seconds
+                        $timeout(function () {
+                            $rootScope.hideChangePin();
+                        }, 3000);
+                    } else {
+                        $rootScope.changePinError = result.message;
+
+                        // Clear PIN fields for security
+                        $rootScope.changePinForm.currentPin = "";
+                        $rootScope.changePinForm.newPin = "";
+                        $rootScope.changePinForm.confirmPin = "";
+                    }
+                })
+                .catch(function (error) {
+                    $rootScope.changePinForm.isSubmitting = false;
+                    $rootScope.changePinError =
+                        "PIN change failed due to connection error";
+
+                    // Clear all fields
                     $rootScope.changePinForm = {
-                        currentPin: '',
-                        newPin: '',
-                        confirmPin: '',
-                        isSubmitting: false
+                        currentPin: "",
+                        newPin: "",
+                        confirmPin: "",
+                        isSubmitting: false,
                     };
-
-                    // Hide form after 3 seconds
-                    $timeout(function() {
-                        $rootScope.hideChangePin();
-                    }, 3000);
-                } else {
-                    $rootScope.changePinError = result.message;
-
-                    // Clear PIN fields for security
-                    $rootScope.changePinForm.currentPin = '';
-                    $rootScope.changePinForm.newPin = '';
-                    $rootScope.changePinForm.confirmPin = '';
-                }
-            })
-            .catch(function(error) {
-                $rootScope.changePinForm.isSubmitting = false;
-                $rootScope.changePinError = 'PIN change failed due to connection error';
-
-                // Clear all fields
-                $rootScope.changePinForm = {
-                    currentPin: '',
-                    newPin: '',
-                    confirmPin: '',
-                    isSubmitting: false
-                };
-            });
+                });
         };
 
         // Add global enter key handler for change PIN
-        $rootScope.onChangePinEnter = function($event) {
-            if ($event.which === 13) { // Enter key
+        $rootScope.onChangePinEnter = function ($event) {
+            if ($event.which === 13) {
+                // Enter key
                 $rootScope.submitChangePin();
             }
         };
     });
 
     // create the controller and inject Angular's $scope
-    app.controller('mainController', function($scope, $http, $interval, $timeout, $location, AuthService) {
+    app.controller(
+        "mainController",
+        function ($scope, $http, $interval, $timeout, $location, AuthService) {
+            // ===========================
+            // SETUP CHECK
+            // ===========================
 
-        // ===========================
-        // SETUP CHECK
-        // ===========================
-
-        // Check if setup is required and redirect to wizard
-        var checkSetupStatus = function() {
-            $http.get('/setup/status').then(function(response) {
-                if (response.data && response.data.required && !response.data.completed) {
-                    $location.path('/installation-wizard');
-                }
-            }).catch(function(error) {
-                // If setup API is not available or there's an error, continue normally
-            });
-        };
-
-        // Check setup status when controller loads
-        checkSetupStatus();
-
-        // ===========================
-        // SCOPE INITIALIZATION
-        // ===========================
-
-        $scope.sortType = 'name'; // set the default sort type
-        $scope.sortReverse = false; // set the default sort order
-        $scope.filterEthoscopes = ''; // set the default search/filter term
-        $scope.notifications = {};
-        $scope.showOnline = true; // show only online devices by default
-        $scope.groupActions = {};
-
-        // Authentication properties
-        $scope.currentUser = null;
-        $scope.isAuthenticated = false;
-        $scope.isAdmin = false;
-
-        // Update authentication state from service
-        var updateAuthState = function() {
-            $scope.currentUser = AuthService.getCurrentUser();
-            $scope.isAuthenticated = AuthService.isAuthenticated;
-            $scope.isAdmin = AuthService.isAdmin;
-        };
-
-        // Initialize authentication state
-        updateAuthState();
-
-        // Authentication state watching is handled in the startup sequence below
-
-        // ===========================
-        // HELPER FUNCTIONS
-        // ===========================
-
-        var spin = function(action) {
-            if (action == "start") {
-                $scope.spinner = new Spinner(opts);
-                $scope.spinner.spin();
-                var loadingContainer = document.getElementById('userInputs');
-                loadingContainer.appendChild($scope.spinner.el);
-            } else if (action == "stop" && $scope.spinner) {
-                $scope.spinner.stop();
-                $scope.spinner = false;
-            }
-        }
-
-        // ===========================
-        // DATA LOADING FUNCTIONS
-        // ===========================
-
-        // Initialize notifications from external source
-        $http.get("https://ethoscope-resources.lab.gilest.ro/news").then(function(response) {
-            var data = response.data;
-            $scope.notifications = data.news;
-        });
-
-        var get_sensors = function() {
-            $http.get('/sensors').then(function(response) {
-                var data = response.data;
-                $scope.sensors = data;
-                $scope.has_sensors = Object.keys($scope.sensors).length;
-            }).catch(function(error) {
-                // Silently fail - sensors are optional
-            });
-        };
-
-        var get_backup_status = function() {
-            // Get lightweight backup summary for dashboard - no individual files data
-            $http.get('/backup/status').then(function(response) {
-                var data = response.data;
-
-                // Store the full response for debugging/advanced use
-                $scope.backup_status_full = data;
-
-                // Extract devices for easy access by device ID
-                $scope.backup_status = data.devices || {};
-
-                // Check backup service availability from summary
-                var summary = data.summary || {};
-                $scope.mysql_backup_available = summary.services && summary.services.mysql_service_available;
-                $scope.rsync_backup_available = summary.services && summary.services.rsync_service_available;
-                $scope.backup_service_available = $scope.mysql_backup_available || $scope.rsync_backup_available;
-
-            }).catch(function(error) {
-                $scope.backup_status = {};
-                $scope.backup_service_available = false;
-                $scope.mysql_backup_available = false;
-                $scope.rsync_backup_available = false;
-            });
-        };
-
-        var formatConciseTime = function(date) {
-            var options = {
-                weekday: 'short', // Mon
-                month: 'short', // Jun
-                day: 'numeric', // 28
-                hour: '2-digit', // 14
-                minute: '2-digit', // 25
-                timeZoneName: 'short' // BST
+            // Check if setup is required and redirect to wizard
+            var checkSetupStatus = function () {
+                $http
+                    .get("/setup/status")
+                    .then(function (response) {
+                        if (
+                            response.data &&
+                            response.data.required &&
+                            !response.data.completed
+                        ) {
+                            $location.path("/installation-wizard");
+                        }
+                    })
+                    .catch(function (error) {
+                        // If setup API is not available or there's an error, continue normally
+                    });
             };
-            return date.toLocaleString('en-GB', options);
-        };
 
-        var update_local_times = function() {
-            $http.get('/node/time').then(function(response) {
-                var data = response.data;
-                var t = new Date(data.time);
-                $scope.time = formatConciseTime(t);
-            }).catch(function(error) {
-                // Silently fail - time will be updated on next refresh
-            });
-            var t = new Date();
-            $scope.localtime = formatConciseTime(t);
-        };
+            // Check setup status when controller loads
+            checkSetupStatus();
 
-        var get_devices = function() {
-            // Always fetch all active devices from database
-            $http.get('/devices?include_inactive=false').then(function(response) {
-                var data = response.data;
+            // ===========================
+            // SCOPE INITIALIZATION
+            // ===========================
 
-                var data_list = [];
+            $scope.sortType = "name"; // set the default sort type
+            $scope.sortReverse = false; // set the default sort order
+            $scope.filterEthoscopes = ""; // set the default search/filter term
+            $scope.notifications = {};
+            $scope.showOnline = true; // show only online devices by default
+            $scope.groupActions = {};
 
-                for (var d in data) {
-                    data_list.push(data[d]);
+            // Authentication properties
+            $scope.currentUser = null;
+            $scope.isAuthenticated = false;
+            $scope.isAdmin = false;
+
+            // Update authentication state from service
+            var updateAuthState = function () {
+                $scope.currentUser = AuthService.getCurrentUser();
+                $scope.isAuthenticated = AuthService.isAuthenticated;
+                $scope.isAdmin = AuthService.isAdmin;
+            };
+
+            // Initialize authentication state
+            updateAuthState();
+
+            // Authentication state watching is handled in the startup sequence below
+
+            // ===========================
+            // HELPER FUNCTIONS
+            // ===========================
+
+            var spin = function (action) {
+                if (action == "start") {
+                    $scope.spinner = new Spinner(opts);
+                    $scope.spinner.spin();
+                    var loadingContainer =
+                        document.getElementById("userInputs");
+                    loadingContainer.appendChild($scope.spinner.el);
+                } else if (action == "stop" && $scope.spinner) {
+                    $scope.spinner.stop();
+                    $scope.spinner = false;
                 }
+            };
 
-                $scope.devices = data_list;
-                $scope.n_devices = $scope.devices.length;
-                var status_summary = {};
+            // ===========================
+            // DATA LOADING FUNCTIONS
+            // ===========================
 
-                for (var d in $scope.devices) {
+            // Initialize notifications from external source
+            $http
+                .get("https://ethoscope-resources.lab.gilest.ro/news")
+                .then(function (response) {
+                    var data = response.data;
+                    $scope.notifications = data.news;
+                });
 
-                    var dev = $scope.devices[d]
+            var get_sensors = function () {
+                $http
+                    .get("/sensors")
+                    .then(function (response) {
+                        var data = response.data;
+                        $scope.sensors = data;
+                        $scope.has_sensors = Object.keys($scope.sensors).length;
+                    })
+                    .catch(function (error) {
+                        // Silently fail - sensors are optional
+                    });
+            };
 
-                    if (!(dev.status in status_summary))
-                        status_summary[dev.status] = 0;
-                    status_summary[dev.status] += 1;
-                }
+            var get_backup_status = function () {
+                // Get lightweight backup summary for dashboard - no individual files data
+                $http
+                    .get("/backup/status")
+                    .then(function (response) {
+                        var data = response.data;
 
+                        // Store the full response for debugging/advanced use
+                        $scope.backup_status_full = data;
 
-                $scope.status_n_summary = status_summary
-            }).catch(function(error) {
-                // Silently fail - devices will be refreshed on next cycle
-            });
-        };
+                        // Extract devices for easy access by device ID
+                        $scope.backup_status = data.devices || {};
 
-        // ===========================
-        // UTILITY FUNCTIONS
-        // ===========================
+                        // Check backup service availability from summary (SQLite/rsync only)
+                        var summary = data.summary || {};
+                        $scope.rsync_backup_available =
+                            summary.services &&
+                            summary.services.rsync_service_available;
+                        $scope.backup_service_available =
+                            $scope.rsync_backup_available;
+                    })
+                    .catch(function (error) {
+                        $scope.backup_status = {};
+                        $scope.backup_service_available = false;
+                        $scope.rsync_backup_available = false;
+                    });
+            };
 
-        $scope.secToDate = function(secs) {
-            if (!secs) return 'No date';
+            var formatConciseTime = function (date) {
+                var options = {
+                    weekday: "short", // Mon
+                    month: "short", // Jun
+                    day: "numeric", // 28
+                    hour: "2-digit", // 14
+                    minute: "2-digit", // 25
+                    timeZoneName: "short", // BST
+                };
+                return date.toLocaleString("en-GB", options);
+            };
 
-            var d;
-            if (isNaN(secs)) {
-                // Handle string dates
-                d = new Date(secs);
-            } else {
-                // Handle timestamp (seconds)
-                d = new Date(secs * 1000);
-            }
+            var update_local_times = function () {
+                $http
+                    .get("/node/time")
+                    .then(function (response) {
+                        var data = response.data;
+                        var t = new Date(data.time);
+                        $scope.time = formatConciseTime(t);
+                    })
+                    .catch(function (error) {
+                        // Silently fail - time will be updated on next refresh
+                    });
+                var t = new Date();
+                $scope.localtime = formatConciseTime(t);
+            };
 
-            // Check if date is valid
-            if (isNaN(d.getTime())) {
-                return 'Invalid date';
-            }
+            var get_devices = function () {
+                // Always fetch all active devices from database
+                $http
+                    .get("/devices?include_inactive=false")
+                    .then(function (response) {
+                        var data = response.data;
 
-            return formatConciseTime(d);
-        };
+                        var data_list = [];
 
-        // ===========================
-        // BACKUP STATUS FUNCTIONS
-        // ===========================
+                        for (var d in data) {
+                            data_list.push(data[d]);
+                        }
 
-        $scope.getBackupStatusClass = function(device) {
-            // Prioritize comprehensive backup status if available
-            if (!$scope.backup_service_available) {
-                return 'backup-status-offline'; // black circle
-            }
+                        $scope.devices = data_list;
+                        $scope.n_devices = $scope.devices.length;
+                        var status_summary = {};
 
-            var backup_info = $scope.backup_status[device.id];
-            if (backup_info && backup_info.backup_types) {
-                // Use new structured backup information (same as tooltip)
-                var mysql = backup_info.backup_types.mysql;
-                var sqlite = backup_info.backup_types.sqlite;
-                var video = backup_info.backup_types.video;
+                        for (var d in $scope.devices) {
+                            var dev = $scope.devices[d];
 
-                // Check if any backup is currently processing
-                if ((mysql && mysql.processing) || (sqlite && sqlite.processing) || (video && video.processing)) {
-                    return 'backup-status-processing'; // orange breathing circle
-                }
+                            if (!(dev.status in status_summary))
+                                status_summary[dev.status] = 0;
+                            status_summary[dev.status] += 1;
+                        }
 
-                // Use the calculated overall_status
-                switch (backup_info.overall_status) {
-                    case 'success':
-                        return 'backup-status-success'; // green circle
-                    case 'partial':
-                        return 'backup-status-partial'; // golden circle
-                    case 'error':
-                        return 'backup-status-error'; // red circle
-                    case 'processing':
-                        return 'backup-status-processing'; // orange circle
-                    case 'no_backups':
-                        return 'backup-status-unknown'; // grey circle
-                    default:
-                        return 'backup-status-unknown'; // grey circle
-                }
-            }
+                        $scope.status_n_summary = status_summary;
+                    })
+                    .catch(function (error) {
+                        // Silently fail - devices will be refreshed on next cycle
+                    });
+            };
 
-            // Fall back to legacy device backup status for backwards compatibility
-            if (device.backup_status !== undefined) {
-                if (device.backup_status === 'processing') {
-                    return 'backup-status-processing';
-                } else if (typeof device.backup_status === 'number') {
-                    if (device.backup_status >= 90) {
-                        return 'backup-status-success';
-                    } else if (device.backup_status >= 50) {
-                        return 'backup-status-partial';
-                    } else if (device.backup_status > 0) {
-                        return 'backup-status-processing';
-                    } else {
-                        return 'backup-status-error';
-                    }
-                } else if (typeof device.backup_status === 'string') {
-                    switch (device.backup_status.toLowerCase()) {
-                        case 'success':
-                        case 'completed':
-                            return 'backup-status-success';
-                        case 'processing':
-                        case 'running':
-                            return 'backup-status-processing';
-                        case 'error':
-                        case 'failed':
-                            return 'backup-status-error';
-                        default:
-                            return 'backup-status-unknown';
-                    }
-                }
-            }
+            // ===========================
+            // UTILITY FUNCTIONS
+            // ===========================
 
-            // Final fallback
-            return 'backup-status-unknown'; // grey circle
-        };
+            $scope.secToDate = function (secs) {
+                if (!secs) return "No date";
 
-        $scope.getBackupStatusTitle = function(device) {
-            // Check if device has new backup fields directly (for backwards compatibility)
-            if (device.backup_status !== undefined && !($scope.backup_status && $scope.backup_status[device.id] && $scope.backup_status[device.id].backup_types)) {
-                var title = 'Backup Status: ';
-
-                if (typeof device.backup_status === 'number') {
-                    title += device.backup_status + '%';
+                var d;
+                if (isNaN(secs)) {
+                    // Handle string dates
+                    d = new Date(secs);
                 } else {
-                    title += device.backup_status;
+                    // Handle timestamp (seconds)
+                    d = new Date(secs * 1000);
                 }
 
-                if (device.backup_size !== undefined) {
-                    title += '\nBackup Size: ' + $scope.humanFileSize(device.backup_size);
+                // Check if date is valid
+                if (isNaN(d.getTime())) {
+                    return "Invalid date";
                 }
 
-                if (device.time_since_backup !== undefined) {
-                    title += '\nTime Since Backup: ' + $scope.elapsedtime(device.time_since_backup);
+                return formatConciseTime(d);
+            };
+
+            // ===========================
+            // BACKUP STATUS FUNCTIONS
+            // ===========================
+
+            $scope.getBackupStatusClass = function (device) {
+                // Prioritize comprehensive backup status if available
+                if (!$scope.backup_service_available) {
+                    return "backup-status-offline"; // black circle
+                }
+
+                var backup_info = $scope.backup_status[device.id];
+                if (backup_info && backup_info.backup_types) {
+                    // Use new structured backup information (same as tooltip)
+                    var sqlite = backup_info.backup_types.sqlite;
+                    var video = backup_info.backup_types.video;
+
+                    // Check if any backup is currently processing
+                    if (
+                        (sqlite && sqlite.processing) ||
+                        (video && video.processing)
+                    ) {
+                        return "backup-status-processing"; // orange breathing circle
+                    }
+
+                    // Use the calculated overall_status
+                    switch (backup_info.overall_status) {
+                        case "success":
+                            return "backup-status-success"; // green circle
+                        case "partial":
+                            return "backup-status-partial"; // golden circle
+                        case "error":
+                            return "backup-status-error"; // red circle
+                        case "processing":
+                            return "backup-status-processing"; // orange circle
+                        case "no_backups":
+                            return "backup-status-unknown"; // grey circle
+                        default:
+                            return "backup-status-unknown"; // grey circle
+                    }
+                }
+
+                // Fall back to legacy device backup status for backwards compatibility
+                if (device.backup_status !== undefined) {
+                    if (device.backup_status === "processing") {
+                        return "backup-status-processing";
+                    } else if (typeof device.backup_status === "number") {
+                        if (device.backup_status >= 90) {
+                            return "backup-status-success";
+                        } else if (device.backup_status >= 50) {
+                            return "backup-status-partial";
+                        } else if (device.backup_status > 0) {
+                            return "backup-status-processing";
+                        } else {
+                            return "backup-status-error";
+                        }
+                    } else if (typeof device.backup_status === "string") {
+                        switch (device.backup_status.toLowerCase()) {
+                            case "success":
+                            case "completed":
+                                return "backup-status-success";
+                            case "processing":
+                            case "running":
+                                return "backup-status-processing";
+                            case "error":
+                            case "failed":
+                                return "backup-status-error";
+                            default:
+                                return "backup-status-unknown";
+                        }
+                    }
+                }
+
+                // Final fallback
+                return "backup-status-unknown"; // grey circle
+            };
+
+            $scope.getBackupStatusTitle = function (device) {
+                // Check if device has new backup fields directly (for backwards compatibility)
+                if (
+                    device.backup_status !== undefined &&
+                    !(
+                        $scope.backup_status &&
+                        $scope.backup_status[device.id] &&
+                        $scope.backup_status[device.id].backup_types
+                    )
+                ) {
+                    var title = "Backup Status: ";
+
+                    if (typeof device.backup_status === "number") {
+                        title += device.backup_status + "%";
+                    } else {
+                        title += device.backup_status;
+                    }
+
+                    if (device.backup_size !== undefined) {
+                        title +=
+                            "\nBackup Size: " +
+                            $scope.humanFileSize(device.backup_size);
+                    }
+
+                    if (device.time_since_backup !== undefined) {
+                        title +=
+                            "\nTime Since Backup: " +
+                            $scope.elapsedtime(device.time_since_backup);
+                    }
+
+                    return title;
+                }
+
+                // Use new structured backup information
+                if (!$scope.backup_service_available) {
+                    return "Backup service offline";
+                }
+
+                var backup_info =
+                    $scope.backup_status && $scope.backup_status[device.id];
+                if (!backup_info || !backup_info.backup_types) {
+                    return "No backup information available";
+                }
+
+                var title =
+                    "Backup Status: " +
+                    (backup_info.overall_status || "unknown").toUpperCase();
+                title += "\n" + "─".repeat(30);
+
+                // Helper function to extract folder name from path
+                function getFolderName(directory) {
+                    if (!directory) return null;
+                    var parts = directory.split("/");
+                    return parts[parts.length - 1] || parts[parts.length - 2]; // Handle trailing slash
+                }
+
+                // Add SQLite backup details
+                var sqlite = backup_info.backup_types.sqlite;
+                if (sqlite && sqlite.available) {
+                    title += "\n🗃️ SQLite: " + sqlite.status.toUpperCase();
+                    if (sqlite.files > 0) {
+                        title += " (" + sqlite.files + " files)";
+                    }
+                    if (sqlite.size > 0) {
+                        title +=
+                            "\n   Size: " + $scope.humanFileSize(sqlite.size);
+                    }
+                    var sqliteFolder = getFolderName(sqlite.directory);
+                    if (sqliteFolder) {
+                        title += "\n   Folder: " + sqliteFolder;
+                    }
+                    if (sqlite.last_backup) {
+                        var lastBackupTime =
+                            Date.now() / 1000 - sqlite.last_backup;
+                        title +=
+                            "\n   Last: " +
+                            $scope.elapsedtime(lastBackupTime) +
+                            " ago";
+                    }
+                } else {
+                    title += "\n🗃️ SQLite: NOT AVAILABLE";
+                }
+
+                // Add Video backup details
+                var video = backup_info.backup_types.video;
+                if (video && video.available) {
+                    title += "\n🎥 Video: " + video.status.toUpperCase();
+                    if (video.files > 0) {
+                        title +=
+                            " (" + video.files.toLocaleString() + " files)";
+                    }
+                    if (video.size_human) {
+                        title += "\n   Size: " + video.size_human;
+                    } else if (video.size > 0) {
+                        title +=
+                            "\n   Size: " + $scope.humanFileSize(video.size);
+                    }
+                    var videoFolder = getFolderName(video.directory);
+                    if (videoFolder) {
+                        title += "\n   Folder: " + videoFolder;
+                    }
+                    if (video.last_backup) {
+                        var lastBackupTime =
+                            Date.now() / 1000 - video.last_backup;
+                        title +=
+                            "\n   Last: " +
+                            $scope.elapsedtime(lastBackupTime) +
+                            " ago";
+                    }
+                } else {
+                    title += "\n🎥 Video: NOT AVAILABLE";
+                }
+
+                // Add processing status if any backup is currently running
+                var processing = [];
+                if (sqlite && sqlite.processing) processing.push("SQLite");
+                if (video && video.processing) processing.push("Video");
+
+                if (processing.length > 0) {
+                    title += "\n" + "─".repeat(30);
+                    title +=
+                        "\n🔄 Currently processing: " + processing.join(", ");
                 }
 
                 return title;
-            }
+            };
 
-            // Use new structured backup information
-            if (!$scope.backup_service_available) {
-                return 'Backup service offline';
-            }
-
-            var backup_info = $scope.backup_status && $scope.backup_status[device.id];
-            if (!backup_info || !backup_info.backup_types) {
-                return 'No backup information available';
-            }
-
-            var title = 'Backup Status: ' + (backup_info.overall_status || 'unknown').toUpperCase();
-            title += '\n' + '─'.repeat(30);
-
-            // Helper function to extract folder name from path
-            function getFolderName(directory) {
-                if (!directory) return null;
-                var parts = directory.split('/');
-                return parts[parts.length - 1] || parts[parts.length - 2]; // Handle trailing slash
-            }
-
-            // Add MySQL backup details
-            var mysql = backup_info.backup_types.mysql;
-            if (mysql && mysql.available) {
-                title += '\n📊 MySQL: ' + mysql.status.toUpperCase();
-                if (mysql.records > 0) {
-                    title += ' (' + mysql.records.toLocaleString() + ' records)';
+            $scope.getDatabaseBackupStatusClass = function (device) {
+                // Check backup service availability
+                if (!$scope.backup_service_available) {
+                    return "backup-status-offline";
                 }
-                if (mysql.size > 0) {
-                    title += '\n   Size: ' + $scope.humanFileSize(mysql.size);
+
+                var backup_info = $scope.backup_status[device.id];
+                if (!backup_info || !backup_info.backup_types) {
+                    return "backup-status-unknown";
                 }
-                var mysqlFolder = getFolderName(mysql.directory);
-                if (mysqlFolder) {
-                    title += '\n   Folder: ' + mysqlFolder;
+
+                var sqlite = backup_info.backup_types.sqlite;
+
+                // Check if database backup is processing
+                if (sqlite && sqlite.processing) {
+                    return "backup-status-processing";
                 }
-                if (mysql.last_backup) {
-                    var lastBackupTime = (Date.now() / 1000) - mysql.last_backup;
-                    title += '\n   Last: ' + $scope.elapsedtime(lastBackupTime) + ' ago';
+
+                // Determine database status
+                var sqliteStatus =
+                    sqlite && sqlite.available
+                        ? sqlite.status
+                        : "not_available";
+
+                var successStatuses = ["success", "completed"];
+                var errorStatuses = ["error", "failed"];
+
+                var sqliteOk = successStatuses.indexOf(sqliteStatus) !== -1;
+                var sqliteError = errorStatuses.indexOf(sqliteStatus) !== -1;
+
+                if (sqlite && sqlite.available && sqliteOk) {
+                    return "backup-status-success";
+                } else if (sqliteError) {
+                    return "backup-status-error";
                 }
-                if (mysql.message && mysql.message !== 'Backup completed successfully') {
-                    title += '\n   Note: ' + mysql.message;
+                // No databases available
+                else {
+                    return "backup-status-unknown";
                 }
-            } else {
-                title += '\n📊 MySQL: NOT AVAILABLE';
-            }
+            };
 
-            // Add SQLite backup details
-            var sqlite = backup_info.backup_types.sqlite;
-            if (sqlite && sqlite.available) {
-                title += '\n🗃️ SQLite: ' + sqlite.status.toUpperCase();
-                if (sqlite.files > 0) {
-                    title += ' (' + sqlite.files + ' files)';
+            $scope.getVideoBackupStatusClass = function (device) {
+                // Check backup service availability
+                if (!$scope.backup_service_available) {
+                    return "backup-status-offline";
                 }
-                if (sqlite.size > 0) {
-                    title += '\n   Size: ' + $scope.humanFileSize(sqlite.size);
+
+                var backup_info = $scope.backup_status[device.id];
+                if (!backup_info || !backup_info.backup_types) {
+                    return "backup-status-unknown";
                 }
-                var sqliteFolder = getFolderName(sqlite.directory);
-                if (sqliteFolder) {
-                    title += '\n   Folder: ' + sqliteFolder;
+
+                var video = backup_info.backup_types.video;
+
+                if (!video || !video.available) {
+                    return "backup-status-unknown";
                 }
-                if (sqlite.last_backup) {
-                    var lastBackupTime = (Date.now() / 1000) - sqlite.last_backup;
-                    title += '\n   Last: ' + $scope.elapsedtime(lastBackupTime) + ' ago';
+
+                if (video.processing) {
+                    return "backup-status-processing";
                 }
-            } else {
-                title += '\n🗃️ SQLite: NOT AVAILABLE';
-            }
 
-            // Add Video backup details
-            var video = backup_info.backup_types.video;
-            if (video && video.available) {
-                title += '\n🎥 Video: ' + video.status.toUpperCase();
-                if (video.files > 0) {
-                    title += ' (' + video.files.toLocaleString() + ' files)';
+                // If there are no video files, show as unknown/nothing to do
+                if (video.files === 0) {
+                    return "backup-status-unknown";
                 }
-                if (video.size_human) {
-                    title += '\n   Size: ' + video.size_human;
-                } else if (video.size > 0) {
-                    title += '\n   Size: ' + $scope.humanFileSize(video.size);
-                }
-                var videoFolder = getFolderName(video.directory);
-                if (videoFolder) {
-                    title += '\n   Folder: ' + videoFolder;
-                }
-                if (video.last_backup) {
-                    var lastBackupTime = (Date.now() / 1000) - video.last_backup;
-                    title += '\n   Last: ' + $scope.elapsedtime(lastBackupTime) + ' ago';
-                }
-            } else {
-                title += '\n🎥 Video: NOT AVAILABLE';
-            }
 
-            // Add processing status if any backup is currently running
-            var processing = [];
-            if (mysql && mysql.processing) processing.push('MySQL');
-            if (sqlite && sqlite.processing) processing.push('SQLite');
-            if (video && video.processing) processing.push('Video');
-
-            if (processing.length > 0) {
-                title += '\n' + '─'.repeat(30);
-                title += '\n🔄 Currently processing: ' + processing.join(', ');
-            }
-
-            return title;
-        };
-
-        $scope.getDatabaseBackupStatusClass = function(device) {
-            // Check backup service availability
-            if (!$scope.backup_service_available) {
-                return 'backup-status-offline';
-            }
-
-            var backup_info = $scope.backup_status[device.id];
-            if (!backup_info || !backup_info.backup_types) {
-                return 'backup-status-unknown';
-            }
-
-            var mysql = backup_info.backup_types.mysql;
-            var sqlite = backup_info.backup_types.sqlite;
-
-            // Check if any database backup is processing
-            if ((mysql && mysql.processing) || (sqlite && sqlite.processing)) {
-                return 'backup-status-processing';
-            }
-
-            // Determine combined database status
-            var mysqlStatus = mysql && mysql.available ? mysql.status : 'not_available';
-            var sqliteStatus = sqlite && sqlite.available ? sqlite.status : 'not_available';
-
-            var successStatuses = ['success', 'completed'];
-            var errorStatuses = ['error', 'failed'];
-
-            var mysqlOk = successStatuses.indexOf(mysqlStatus) !== -1;
-            var sqliteOk = successStatuses.indexOf(sqliteStatus) !== -1;
-            var mysqlError = errorStatuses.indexOf(mysqlStatus) !== -1;
-            var sqliteError = errorStatuses.indexOf(sqliteStatus) !== -1;
-
-            // Both available and successful
-            if (mysql && mysql.available && sqlite && sqlite.available && mysqlOk && sqliteOk) {
-                return 'backup-status-success';
-            }
-            // At least one available and successful
-            else if ((mysql && mysql.available && mysqlOk) || (sqlite && sqlite.available && sqliteOk)) {
-                // But check if other has error
-                if (mysqlError || sqliteError) {
-                    return 'backup-status-partial';
-                }
-                return 'backup-status-success';
-            }
-            // Any error
-            else if (mysqlError || sqliteError) {
-                return 'backup-status-error';
-            }
-            // No databases available
-            else {
-                return 'backup-status-unknown';
-            }
-        };
-
-        $scope.getVideoBackupStatusClass = function(device) {
-            // Check backup service availability
-            if (!$scope.backup_service_available) {
-                return 'backup-status-offline';
-            }
-
-            var backup_info = $scope.backup_status[device.id];
-            if (!backup_info || !backup_info.backup_types) {
-                return 'backup-status-unknown';
-            }
-
-            var video = backup_info.backup_types.video;
-
-            if (!video || !video.available) {
-                return 'backup-status-unknown';
-            }
-
-            if (video.processing) {
-                return 'backup-status-processing';
-            }
-
-            // If there are no video files, show as unknown/nothing to do
-            if (video.files === 0) {
-                return 'backup-status-unknown';
-            }
-
-            switch (video.status) {
-                case 'success':
-                case 'completed':
-                    return 'backup-status-success';
-                case 'error':
-                case 'failed':
-                    return 'backup-status-error';
-                case 'processing':
-                case 'running':
-                    return 'backup-status-processing';
-                default:
-                    return 'backup-status-unknown';
-            }
-        };
-
-        $scope.getDatabaseBackupStatusTitle = function(device) {
-            if (!$scope.backup_service_available) {
-                return 'Database backup service offline';
-            }
-
-            var backup_info = $scope.backup_status[device.id];
-            if (!backup_info || !backup_info.backup_types) {
-                return 'No database backup information available';
-            }
-
-            var mysql = backup_info.backup_types.mysql;
-            var sqlite = backup_info.backup_types.sqlite;
-
-            var title = 'Database Backups';
-            title += '\n' + '─'.repeat(20);
-
-            // MySQL info
-            if (mysql && mysql.available) {
-                title += '\n📊 MySQL: ' + mysql.status.toUpperCase();
-                if (mysql.records > 0) {
-                    title += ' (' + mysql.records.toLocaleString() + ' records)';
-                }
-                if (mysql.size > 0) {
-                    title += '\n   Size: ' + $scope.humanFileSize(mysql.size);
-                }
-                if (mysql.last_backup) {
-                    var lastBackupTime = (Date.now() / 1000) - mysql.last_backup;
-                    title += '\n   Last: ' + $scope.elapsedtime(lastBackupTime) + ' ago';
-                }
-            } else {
-                title += '\n📊 MySQL: NOT AVAILABLE';
-            }
-
-            // SQLite info
-            if (sqlite && sqlite.available) {
-                title += '\n🗃️ SQLite: ' + sqlite.status.toUpperCase();
-                if (sqlite.files > 0) {
-                    title += ' (' + sqlite.files + ' files)';
-                }
-                if (sqlite.size > 0) {
-                    title += '\n   Size: ' + $scope.humanFileSize(sqlite.size);
-                }
-                if (sqlite.last_backup) {
-                    var lastBackupTime = (Date.now() / 1000) - sqlite.last_backup;
-                    title += '\n   Last: ' + $scope.elapsedtime(lastBackupTime) + ' ago';
-                }
-            } else {
-                title += '\n🗃️ SQLite: NOT AVAILABLE';
-            }
-
-            return title;
-        };
-
-        $scope.getVideoBackupStatusTitle = function(device) {
-            if (!$scope.backup_service_available) {
-                return 'Video backup service offline';
-            }
-
-            var backup_info = $scope.backup_status[device.id];
-            if (!backup_info || !backup_info.backup_types) {
-                return 'No video backup information available';
-            }
-
-            var video = backup_info.backup_types.video;
-
-            if (!video || !video.available) {
-                return 'Video backup not available';
-            }
-
-            // Special case: no video files to backup
-            if (video.files === 0) {
-                return 'Video Backup: Nothing to do\nNo video files found';
-            }
-
-            var title = 'Video Backup: ' + video.status.toUpperCase();
-
-            if (video.files > 0) {
-                title += '\nFiles: ' + video.files.toLocaleString();
-            }
-
-            if (video.size_human) {
-                title += '\nSize: ' + video.size_human;
-            } else if (video.size > 0) {
-                title += '\nSize: ' + $scope.humanFileSize(video.size);
-            }
-
-            if (video.last_backup) {
-                var lastBackupTime = (Date.now() / 1000) - video.last_backup;
-                title += '\nLast backup: ' + $scope.elapsedtime(lastBackupTime) + ' ago';
-            }
-
-            if (video.processing) {
-                title += '\n🔄 Currently processing...';
-            }
-
-            return title;
-        };
-
-        $scope.getBackupStatusText = function(device) {
-            if (!$scope.backup_service_available) {
-                return 'Service offline';
-            }
-
-            var backup_info = $scope.backup_status[device.id];
-            if (!backup_info || !backup_info.backup_types) {
-                return 'No backup info';
-            }
-
-            var mysql = backup_info.backup_types.mysql;
-            var sqlite = backup_info.backup_types.sqlite;
-            var video = backup_info.backup_types.video;
-
-            var text = '';
-
-            // Check if any backup is processing
-            if ((mysql && mysql.processing) || (sqlite && sqlite.processing) || (video && video.processing)) {
-                return 'Processing...';
-            }
-
-            // Calculate total size for display
-            var totalSize = 0;
-            if (mysql && mysql.available && mysql.size) totalSize += mysql.size;
-            if (sqlite && sqlite.available && sqlite.size) totalSize += sqlite.size;
-            if (video && video.available && video.size) totalSize += video.size;
-
-            // Show size if we have any backups
-            if (totalSize > 0) {
-                text = $scope.humanFileSize(totalSize);
-            }
-
-            // Show last backup time if available (take the most recent)
-            var lastBackupTime = 0;
-            if (mysql && mysql.last_backup) lastBackupTime = Math.max(lastBackupTime, mysql.last_backup);
-            if (sqlite && sqlite.last_backup) lastBackupTime = Math.max(lastBackupTime, sqlite.last_backup);
-            if (video && video.last_backup) lastBackupTime = Math.max(lastBackupTime, video.last_backup);
-
-            if (lastBackupTime > 0) {
-                var timeSinceBackup = (Date.now() / 1000) - lastBackupTime;
-                if (text) text += ' - ';
-                text += $scope.elapsedtime(timeSinceBackup) + ' ago';
-            }
-
-            // If no meaningful info, show overall status
-            if (!text) {
-                switch (backup_info.overall_status) {
-                    case 'success':
-                        return 'All backups OK';
-                    case 'partial':
-                        return 'Partial backup';
-                    case 'error':
-                        return 'Backup failed';
-                    case 'no_backups':
-                        return 'No backups configured';
+                switch (video.status) {
+                    case "success":
+                    case "completed":
+                        return "backup-status-success";
+                    case "error":
+                    case "failed":
+                        return "backup-status-error";
+                    case "processing":
+                    case "running":
+                        return "backup-status-processing";
                     default:
-                        return 'Unknown status';
+                        return "backup-status-unknown";
                 }
-            }
+            };
 
-            return text;
-        };
+            $scope.getDatabaseBackupStatusTitle = function (device) {
+                if (!$scope.backup_service_available) {
+                    return "Database backup service offline";
+                }
 
+                var backup_info = $scope.backup_status[device.id];
+                if (!backup_info || !backup_info.backup_types) {
+                    return "No database backup information available";
+                }
 
-        $scope.elapsedtime = function(t) {
-            // Calculate the number of days left
-            var days = Math.floor(t / 86400);
-            // After deducting the days calculate the number of hours left
-            var hours = Math.floor((t - (days * 86400)) / 3600)
-            // After days and hours , how many minutes are left
-            var minutes = Math.floor((t - (days * 86400) - (hours * 3600)) / 60)
-            // Finally how many seconds left after removing days, hours and minutes.
-            var secs = Math.floor((t - (days * 86400) - (hours * 3600) - (minutes * 60)))
+                var sqlite = backup_info.backup_types.sqlite;
 
-            var x = "0 s";
-            if (days > 0) {
-                x = days + " days, " + hours + "h ";
-            } else if (hours > 0) {
-                x = hours + "h, " + minutes + "min ";
-            } else if (minutes > 0) {
-                x = minutes + "min ";
-            } else if (secs > 0) {
-                x = secs + " s ";
-            }
-            return x;
+                var title = "Database Backups";
+                title += "\n" + "─".repeat(20);
 
-        };
-
-        /**
-         * Format bytes as human-readable text.
-         *
-         * @param bytes Number of bytes.
-         * @param si True to use metric (SI) units, aka powers of 1000. False to use
-         *           binary (IEC), aka powers of 1024.
-         * @param dp Number of decimal places to display.
-         *
-         * @return Formatted string.
-         */
-        $scope.humanFileSize = function(bytes, si, dp) {
-            if (si === undefined) si = false;
-            if (dp === undefined) dp = 1;
-            var thresh = si ? 1000 : 1024;
-
-            if (Math.abs(bytes) < thresh) {
-                return bytes + ' B';
-            }
-
-            var units = si ? ['kB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'] : ['KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB', 'ZiB', 'YiB'];
-            var u = -1;
-            var r = Math.pow(10, dp);
-
-            do {
-                bytes /= thresh;
-                ++u;
-            } while (Math.round(Math.abs(bytes) * r) / r >= thresh && u < units.length - 1);
-
-
-            return bytes.toFixed(dp) + ' ' + units[u];
-        };
-
-        // ===========================
-        // MODAL & FORM HANDLING
-        // ===========================
-
-        // ===========================
-        // MODAL & EVENT HANDLING
-        // ===========================
-
-        // Sensor editing moved to dedicated #!/sensors page
-
-        $scope.manuallyAdd = function() {
-
-            spin('start');
-            $http.post('/device/add', $scope.ip_to_add)
-                .then(function(response) {
-                    spin('stop');
-                    var res = response.data;
-                    if (res.problems && res.problems.length) {
-                        $scope.alertMessage = "The following entries could not be added: " + res.problems.join();
-                        $('#IPAlertModal').modal('show');
+                // SQLite info
+                if (sqlite && sqlite.available) {
+                    title += "\n🗃️ SQLite: " + sqlite.status.toUpperCase();
+                    if (sqlite.files > 0) {
+                        title += " (" + sqlite.files + " files)";
                     }
-                })
-                .catch(function() {
-                    spin('stop');
-                })
-        };
+                    if (sqlite.size > 0) {
+                        title +=
+                            "\n   Size: " + $scope.humanFileSize(sqlite.size);
+                    }
+                    if (sqlite.last_backup) {
+                        var lastBackupTime =
+                            Date.now() / 1000 - sqlite.last_backup;
+                        title +=
+                            "\n   Last: " +
+                            $scope.elapsedtime(lastBackupTime) +
+                            " ago";
+                    }
+                } else {
+                    title += "\n🗃️ SQLite: NOT AVAILABLE";
+                }
 
-        /**
-         * Refresh platform data (called periodically)
-         */
-        var refresh_platform = function() {
-            // Only refresh when page is visible (performance optimization)
-            if (document.visibilityState == "visible") {
+                return title;
+            };
+
+            $scope.getVideoBackupStatusTitle = function (device) {
+                if (!$scope.backup_service_available) {
+                    return "Video backup service offline";
+                }
+
+                var backup_info = $scope.backup_status[device.id];
+                if (!backup_info || !backup_info.backup_types) {
+                    return "No video backup information available";
+                }
+
+                var video = backup_info.backup_types.video;
+
+                if (!video || !video.available) {
+                    return "Video backup not available";
+                }
+
+                // Special case: no video files to backup
+                if (video.files === 0) {
+                    return "Video Backup: Nothing to do\nNo video files found";
+                }
+
+                var title = "Video Backup: " + video.status.toUpperCase();
+
+                if (video.files > 0) {
+                    title += "\nFiles: " + video.files.toLocaleString();
+                }
+
+                if (video.size_human) {
+                    title += "\nSize: " + video.size_human;
+                } else if (video.size > 0) {
+                    title += "\nSize: " + $scope.humanFileSize(video.size);
+                }
+
+                if (video.last_backup) {
+                    var lastBackupTime = Date.now() / 1000 - video.last_backup;
+                    title +=
+                        "\nLast backup: " +
+                        $scope.elapsedtime(lastBackupTime) +
+                        " ago";
+                }
+
+                if (video.processing) {
+                    title += "\n🔄 Currently processing...";
+                }
+
+                return title;
+            };
+
+            $scope.getBackupStatusText = function (device) {
+                if (!$scope.backup_service_available) {
+                    return "Service offline";
+                }
+
+                var backup_info = $scope.backup_status[device.id];
+                if (!backup_info || !backup_info.backup_types) {
+                    return "No backup info";
+                }
+
+                var sqlite = backup_info.backup_types.sqlite;
+                var video = backup_info.backup_types.video;
+
+                var text = "";
+
+                // Check if any backup is processing
+                if (
+                    (sqlite && sqlite.processing) ||
+                    (video && video.processing)
+                ) {
+                    return "Processing...";
+                }
+
+                // Calculate total size for display
+                var totalSize = 0;
+                if (sqlite && sqlite.available && sqlite.size)
+                    totalSize += sqlite.size;
+                if (video && video.available && video.size)
+                    totalSize += video.size;
+
+                // Show size if we have any backups
+                if (totalSize > 0) {
+                    text = $scope.humanFileSize(totalSize);
+                }
+
+                // Show last backup time if available (take the most recent)
+                var lastBackupTime = 0;
+                if (sqlite && sqlite.last_backup)
+                    lastBackupTime = Math.max(
+                        lastBackupTime,
+                        sqlite.last_backup,
+                    );
+                if (video && video.last_backup)
+                    lastBackupTime = Math.max(
+                        lastBackupTime,
+                        video.last_backup,
+                    );
+
+                if (lastBackupTime > 0) {
+                    var timeSinceBackup = Date.now() / 1000 - lastBackupTime;
+                    if (text) text += " - ";
+                    text += $scope.elapsedtime(timeSinceBackup) + " ago";
+                }
+
+                // If no meaningful info, show overall status
+                if (!text) {
+                    switch (backup_info.overall_status) {
+                        case "success":
+                            return "All backups OK";
+                        case "partial":
+                            return "Partial backup";
+                        case "error":
+                            return "Backup failed";
+                        case "no_backups":
+                            return "No backups configured";
+                        default:
+                            return "Unknown status";
+                    }
+                }
+
+                return text;
+            };
+
+            $scope.elapsedtime = function (t) {
+                // Calculate the number of days left
+                var days = Math.floor(t / 86400);
+                // After deducting the days calculate the number of hours left
+                var hours = Math.floor((t - days * 86400) / 3600);
+                // After days and hours , how many minutes are left
+                var minutes = Math.floor(
+                    (t - days * 86400 - hours * 3600) / 60,
+                );
+                // Finally how many seconds left after removing days, hours and minutes.
+                var secs = Math.floor(
+                    t - days * 86400 - hours * 3600 - minutes * 60,
+                );
+
+                var x = "0 s";
+                if (days > 0) {
+                    x = days + " days, " + hours + "h ";
+                } else if (hours > 0) {
+                    x = hours + "h, " + minutes + "min ";
+                } else if (minutes > 0) {
+                    x = minutes + "min ";
+                } else if (secs > 0) {
+                    x = secs + " s ";
+                }
+                return x;
+            };
+
+            /**
+             * Format bytes as human-readable text.
+             *
+             * @param bytes Number of bytes.
+             * @param si True to use metric (SI) units, aka powers of 1000. False to use
+             *           binary (IEC), aka powers of 1024.
+             * @param dp Number of decimal places to display.
+             *
+             * @return Formatted string.
+             */
+            $scope.humanFileSize = function (bytes, si, dp) {
+                if (si === undefined) si = false;
+                if (dp === undefined) dp = 1;
+                var thresh = si ? 1000 : 1024;
+
+                if (Math.abs(bytes) < thresh) {
+                    return bytes + " B";
+                }
+
+                var units = si
+                    ? ["kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"]
+                    : ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"];
+                var u = -1;
+                var r = Math.pow(10, dp);
+
+                do {
+                    bytes /= thresh;
+                    ++u;
+                } while (
+                    Math.round(Math.abs(bytes) * r) / r >= thresh &&
+                    u < units.length - 1
+                );
+
+                return bytes.toFixed(dp) + " " + units[u];
+            };
+
+            // ===========================
+            // MODAL & FORM HANDLING
+            // ===========================
+
+            // ===========================
+            // MODAL & EVENT HANDLING
+            // ===========================
+
+            // Sensor editing moved to dedicated #!/sensors page
+
+            $scope.manuallyAdd = function () {
+                spin("start");
+                $http
+                    .post("/device/add", $scope.ip_to_add)
+                    .then(function (response) {
+                        spin("stop");
+                        var res = response.data;
+                        if (res.problems && res.problems.length) {
+                            $scope.alertMessage =
+                                "The following entries could not be added: " +
+                                res.problems.join();
+                            $("#IPAlertModal").modal("show");
+                        }
+                    })
+                    .catch(function () {
+                        spin("stop");
+                    });
+            };
+
+            /**
+             * Refresh platform data (called periodically)
+             */
+            var refresh_platform = function () {
+                // Only refresh when page is visible (performance optimization)
+                if (document.visibilityState == "visible") {
+                    get_devices();
+                    update_local_times();
+                    get_sensors();
+                    get_backup_status();
+
+                    // Update notification badge in header
+                    // Note: AngularJS templates cannot access scope from header, so we use jQuery
+                    $(".notification-badge").html($scope.notifications.length);
+                }
+            };
+
+            // ===========================
+            // INITIALIZATION FUNCTION
+            // ===========================
+
+            /**
+             * Initialize all platform data immediately on page load
+             */
+            var initialize_platform = function () {
                 get_devices();
                 update_local_times();
                 get_sensors();
                 get_backup_status();
+            };
 
-                // Update notification badge in header
-                // Note: AngularJS templates cannot access scope from header, so we use jQuery
-                $('.notification-badge').html($scope.notifications.length);
-            }
-        };
+            // ===========================
+            // DEVICE INTERACTION FUNCTIONS
+            // ===========================
+            $scope.pokeDevice = function (device) {
+                if (device.last_ip) {
+                    $http
+                        .post("/device/add", device.last_ip)
+                        .then(function (response) {
+                            var data = response.data;
+                            if (data.added && data.added.length > 0) {
+                                // Refresh devices to show updated status
+                                get_devices();
+                            } else if (
+                                data.problems &&
+                                data.problems.length > 0
+                            ) {
+                                // Handle problems silently
+                            }
+                        })
+                        .catch(function (error) {
+                            // Handle errors silently
+                        });
+                }
+            };
 
-        // ===========================
-        // INITIALIZATION FUNCTION
-        // ===========================
+            // ===========================
+            // STARTUP SEQUENCE
+            // ===========================
 
-        /**
-         * Initialize all platform data immediately on page load
-         */
-        var initialize_platform = function() {
-            get_devices();
-            update_local_times();
-            get_sensors();
-            get_backup_status();
-        };
+            var refreshInterval = null;
 
-        // ===========================
-        // DEVICE INTERACTION FUNCTIONS
-        // ===========================
-        $scope.pokeDevice = function(device) {
-            if (device.last_ip) {
-                $http.post('/device/add', device.last_ip)
-                    .then(function(response) {
-                        var data = response.data;
-                        if (data.added && data.added.length > 0) {
-                            // Refresh devices to show updated status
-                            get_devices();
-                        } else if (data.problems && data.problems.length > 0) {
-                            // Handle problems silently
-                        }
-                    })
-                    .catch(function(error) {
-                        // Handle errors silently
-                    });
-            }
-        };
+            // Always initialize platform data immediately - authentication handled at API level
+            initialize_platform();
 
-        // ===========================
-        // STARTUP SEQUENCE
-        // ===========================
+            // Set up periodic refresh every 5 seconds
+            refreshInterval = $interval(refresh_platform, 5 * 1000);
 
-        var refreshInterval = null;
+            // ===========================
+            // AUTHENTICATION FUNCTIONS
+            // ===========================
 
-        // Always initialize platform data immediately - authentication handled at API level
-        initialize_platform();
+            $scope.logout = function () {
+                AuthService.logout();
+            };
 
-        // Set up periodic refresh every 5 seconds
-        refreshInterval = $interval(refresh_platform, 5 * 1000);
+            $scope.showChangePin = function () {
+                // Trigger change PIN modal in auth controller
+                $scope.$broadcast("showChangePinModal");
+            };
 
-        // ===========================
-        // AUTHENTICATION FUNCTIONS
-        // ===========================
-
-        $scope.logout = function() {
-            AuthService.logout();
-        };
-
-        $scope.showChangePin = function() {
-            // Trigger change PIN modal in auth controller
-            $scope.$broadcast('showChangePinModal');
-        };
-
-        // Clean up interval when scope is destroyed
-        $scope.$on("$destroy", function() {
-            if (refreshInterval) {
-                $interval.cancel(refreshInterval);
-            }
-            AuthService.stopSessionMonitoring();
-        });
-    });
-})()
+            // Clean up interval when scope is destroyed
+            $scope.$on("$destroy", function () {
+                if (refreshInterval) {
+                    $interval.cancel(refreshInterval);
+                }
+                AuthService.stopSessionMonitoring();
+            });
+        },
+    );
+})();

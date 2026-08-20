@@ -248,7 +248,6 @@ def generate_new_device_map():
 
         fs = [executor.submit(scan_one_device, url) for url in urls]
         for f in concurrent.futures.as_completed(fs):
-
             try:
                 id, ip = f.result()
                 if id is None:
@@ -408,7 +407,6 @@ def _get_active_backup_services():
         list: Names of active backup services
     """
     backup_services = [
-        "ethoscope_backup_mysql",
         "ethoscope_backup_video",
         "ethoscope_backup_sqlite",
         "ethoscope_backup_unified",

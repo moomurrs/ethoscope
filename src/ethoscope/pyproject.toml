@@ -54,7 +54,6 @@ dependencies = [
     "numpy>=1.21.0",
     "scipy>=1.7.0",
     "GitPython>=3.1.44",
-    "mysql-connector-python>=8.0.16",
     "cherrypy>=18.10.0",
     "pyserial>=3.5",
     "bottle>=0.13.4",

@@ -17,7 +17,6 @@ RUN pacman -Sy --needed --noconfirm \
     python \
     python-bottle \
     python-cherrypy \
-    python-mysql-connector \
     python-netifaces \
     python-gitpython \
     python-zeroconf \

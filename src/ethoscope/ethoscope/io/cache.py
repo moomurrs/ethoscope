@@ -6,8 +6,6 @@ import sqlite3
 import time
 from contextlib import closing
 
-import mysql.connector
-
 
 class BaseDatabaseMetadataCache:
     """
@@ -233,8 +231,8 @@ class BaseDatabaseMetadataCache:
         Args:
             timestamp: Experiment timestamp
             backup_filename: Database backup filename
-            result_writer_type: Type of result writer (SQLiteResultWriter or MySQLResultWriter)
-            sqlite_source_path: Path to SQLite database (if applicable)
+            result_writer_type: Type of result writer (SQLiteResultWriter)
+            sqlite_source_path: Path to SQLite database
 
         Returns:
             dict: Properly formatted experiment info dictionary
@@ -260,7 +258,7 @@ class BaseDatabaseMetadataCache:
 
     def get_experimental_metadata(self):
         """
-        Extract experimental metadata from MySQL database METADATA table.
+        Extract experimental metadata from database METADATA table.
 
         Returns:
             dict: Experimental metadata containing user, location, and other info
@@ -299,7 +297,7 @@ class BaseDatabaseMetadataCache:
 
     def get_device_name(self):
         """
-        Get the device name from the MySQL METADATA table.
+        Get the device name from the METADATA table.
 
         Returns:
             str: device name or None if not found
@@ -336,24 +334,16 @@ class BaseDatabaseMetadataCache:
         if backup_filename is None:
             ts_str = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(timestamp))
             if hasattr(self, "db_credentials") and "name" in self.db_credentials:
-                # For SQLite, use the database filename
                 if sqlite_source_path:
                     backup_filename = os.path.basename(sqlite_source_path)
                 else:
                     backup_filename = f"{ts_str}_{self.device_name}.db"
             else:
-                # For MySQL, generate standard name
                 backup_filename = f"{ts_str}_{self.device_name}.db"
 
-        # Auto-detect result writer type if not provided
+        # Auto-detect result writer type if not provided – always SQLite
         if result_writer_type is None:
-            if hasattr(self, "db_credentials") and "name" in self.db_credentials:
-                if sqlite_source_path or self.db_credentials["name"].endswith(".db"):
-                    result_writer_type = "SQLiteResultWriter"
-                else:
-                    result_writer_type = "MySQLResultWriter"
-            else:
-                result_writer_type = "SQLiteResultWriter"
+            result_writer_type = "SQLiteResultWriter"
 
         # Create properly formatted experiment info from database metadata
         experiment_info = self.create_experiment_info_from_metadata(
@@ -737,7 +727,7 @@ class BaseDatabaseMetadataCache:
                 else:
                     # Index out of range, fallback to most recent
                     logging.warning(
-                        f"Cache index {cache_index} out of range (max: {len(cache_files)-1}), using most recent"
+                        f"Cache index {cache_index} out of range (max: {len(cache_files) - 1}), using most recent"
                     )
                     selected_cache = cache_files[0]
 
@@ -870,162 +860,12 @@ class BaseDatabaseMetadataCache:
 
     def get_backup_filename(self):
         """
-        Get the backup filename for the MySQL database from the METADATA table.
+        Get the backup filename for the database from the METADATA table.
 
         Returns:
             str or None: Backup filename if available, None otherwise
         """
         return self._get_value_from_database("backup_filename")
-
-
-class MySQLDatabaseMetadataCache(BaseDatabaseMetadataCache):
-    """
-    MySQL-specific implementation of database metadata caching.
-
-    Handles MySQL/MariaDB database metadata querying including:
-    - InnoDB tablespace size calculation
-    - MySQL-specific table counting
-    - MySQL version detection
-    """
-
-    def _query_database(self):
-        """Query MySQL database for metadata including size and table counts."""
-        with mysql.connector.connect(
-            host=self.db_credentials.get("host", "localhost"),
-            user=self.db_credentials["user"],
-            password=self.db_credentials["password"],
-            database=self.db_credentials["name"],
-            charset="latin1",
-            use_unicode=True,
-            connect_timeout=10,
-        ) as conn:
-            cursor = conn.cursor()
-
-            # Get actual database file size (to match SQLite file size comparison)
-            try:
-                cursor.execute(
-                    """
-                    SELECT SUM(size) * @@innodb_page_size as db_size
-                    FROM information_schema.INNODB_SYS_TABLESPACES
-                    WHERE name LIKE %s
-                """,
-                    (f"{self.db_credentials['name']}/%",),
-                )
-                result = cursor.fetchone()
-                db_size = result[0] if result and result[0] else 0
-
-                # If InnoDB method fails or returns 0, use traditional method with overhead
-                if db_size == 0:
-                    cursor.execute(
-                        """
-                        SELECT ROUND(SUM(data_length + index_length + data_free)) as db_size
-                        FROM information_schema.tables
-                        WHERE table_schema = %s
-                    """,
-                        (self.db_credentials["name"],),
-                    )
-                    db_size = cursor.fetchone()[0] or 0
-
-            except mysql.connector.Error:
-                # Fallback to traditional method if InnoDB queries fail
-                cursor.execute(
-                    """
-                    SELECT ROUND(SUM(data_length + index_length + data_free)) as db_size
-                    FROM information_schema.tables
-                    WHERE table_schema = %s
-                """,
-                    (self.db_credentials["name"],),
-                )
-                db_size = cursor.fetchone()[0] or 0
-
-            # Get table counts using COUNT(*) for backup percentage calculation
-            cursor.execute("SHOW TABLES")
-            tables = [row[0] for row in cursor.fetchall()]
-
-            table_counts = {}
-            for table in tables:
-                try:
-                    # Check if the table has an auto-incrementing 'id' column
-                    cursor.execute(f"SHOW COLUMNS FROM `{table}` LIKE 'id'")
-                    id_column_exists = bool(cursor.fetchone())
-
-                    if id_column_exists:
-                        cursor.execute(f"SELECT MAX(id) FROM `{table}`")
-                        result = cursor.fetchone()
-                        table_counts[table] = (
-                            result[0] if result and result[0] is not None else 0
-                        ) + 1
-                    else:
-                        # Fallback to COUNT(*) if no auto-incrementing 'id' or other issues
-                        cursor.execute(f"SELECT COUNT(*) FROM `{table}`")
-                        result = cursor.fetchone()
-                        table_counts[table] = (
-                            result[0] if result and result[0] is not None else 0
-                        )
-                except mysql.connector.Error as e:
-                    logging.warning(f"Could not get count for table {table}: {e}")
-                    table_counts[table] = 0
-
-            # Get database version
-            db_version = "Unknown"
-            try:
-                cursor.execute("SELECT VERSION();")
-                result = cursor.fetchone()
-                if result and result[0]:
-                    db_version = result[0]
-            except Exception as e:
-                logging.warning(f"Failed to get database version: {e}")
-
-            return {
-                "db_version": db_version,
-                "db_size_bytes": int(db_size),
-                "table_counts": table_counts,
-                "last_db_update": time.time(),
-            }
-
-    def _get_value_from_database(self, field, warn=True):
-        """
-        Retrieve a specific field value from the MySQL database METADATA table.
-
-        Args:
-            field (str): The metadata field name to retrieve (e.g., 'backup_filename', 'date_time', 'machine_name')
-            warn (bool): Whether to log warnings for database connection errors (default: True)
-
-        Returns:
-            str or None: The field value if found, None if field doesn't exist or query fails
-        """
-        try:
-            with mysql.connector.connect(
-                host=self.db_credentials.get("host", "localhost"),
-                user=self.db_credentials["user"],
-                password=self.db_credentials["password"],
-                database=self.db_credentials["name"],
-                charset="latin1",
-                use_unicode=True,
-                connect_timeout=10,
-            ) as conn:
-                cursor = conn.cursor()
-
-                # Query the metadata table for the backup filename
-                cursor.execute(
-                    f"SELECT DISTINCT value FROM METADATA WHERE field = '{field}' AND value IS NOT NULL"
-                )
-                result = cursor.fetchone()
-
-                if result:
-                    value = result[0]
-                    logging.info(f"Found {field} from metadata: {value}")
-                    return value
-                else:
-                    # logging.info(f"No {field} found in metadata table")
-                    return None
-
-        except mysql.connector.Error as e:
-            logging.warning(f"Could not retrieve {field} from metadata table: {e}")
-            return None
-        except Exception as e:
-            logging.error(f"Unexpected error retrieving {field}: {e}")
-            return None
 
 
 class SQLiteDatabaseMetadataCache(BaseDatabaseMetadataCache):
@@ -1177,37 +1017,22 @@ def create_metadata_cache(
     database_type=None,
 ):
     """
-    Factory function to create appropriate metadata cache based on database type.
+    Factory function to create metadata cache (SQLite only).
 
     Args:
-        db_credentials (dict): Database connection credentials
+        db_credentials (dict): Database connection credentials (must contain sqlite path)
         device_name (str): Name of the device for cache file naming
         cache_dir (str): Directory path for storing cache files
-        database_type (str): Database type - "MySQL", "SQLite3", or None for auto-detection
+        database_type (str): Kept for backward compat – always SQLite3
 
     Returns:
-        BaseDatabaseMetadataCache: Appropriate metadata cache instance
+        SQLiteDatabaseMetadataCache: Metadata cache instance
     """
-    # Auto-detect database type if not specified
-    if database_type is None:
-        db_name = db_credentials.get("name", "")
-        if (
-            db_name.endswith(".db")
-            or db_name.endswith(".sqlite")
-            or db_name.endswith(".sqlite3")
-        ):
-            database_type = "SQLite3"
-        else:
-            database_type = "MySQL"
-
-    if database_type == "SQLite3":
-        return SQLiteDatabaseMetadataCache(db_credentials, device_name, cache_dir)
-    else:
-        return MySQLDatabaseMetadataCache(db_credentials, device_name, cache_dir)
+    return SQLiteDatabaseMetadataCache(db_credentials, device_name, cache_dir)
 
 
 # Backward compatibility alias
-DatabaseMetadataCache = MySQLDatabaseMetadataCache
+DatabaseMetadataCache = SQLiteDatabaseMetadataCache
 
 
 class DatabasesInfo:
@@ -1234,7 +1059,7 @@ class DatabasesInfo:
         Uses caching to avoid repeated reads within a short time period.
 
         Returns:
-            dict: Nested structure with SQLite and MariaDB database information
+            dict: Nested structure with SQLite database information
         """
         current_time = time.time()
 
@@ -1253,7 +1078,7 @@ class DatabasesInfo:
             return databases_info
         except Exception as e:
             logging.warning(f"Failed to get databases info: {e}")
-            return {"SQLite": {}, "MariaDB": {}}
+            return {"SQLite": {}}
 
     def _invalidate_databases_cache(self):
         """Invalidate the databases info cache to force a fresh read."""
@@ -1271,19 +1096,6 @@ class DatabasesInfo:
         """
         databases_data = self.get_all_databases_info()
         database_list = []
-
-        # Process MariaDB (MySQL) databases
-        if "MariaDB" in databases_data:
-            for db_name, db_info in databases_data["MariaDB"].items():
-                database_list.append(
-                    {
-                        "name": db_name,
-                        "type": "MySQL",
-                        "active": True,
-                        "size": db_info.get("db_size_bytes", 0),
-                        "status": db_info.get("db_status", "unknown"),
-                    }
-                )
 
         # Process SQLite databases
         if "SQLite" in databases_data:
@@ -1303,43 +1115,11 @@ class DatabasesInfo:
 
     def get_all_databases_info(self):
         """
-        Get comprehensive database information using existing cache methods with enhanced error handling.
+        Get comprehensive database information using existing cache methods.
 
-        This function leverages existing cache infrastructure to provide a nested structure
-        containing information about both SQLite and MariaDB databases:
-        - SQLite databases: All historical databases from cache files
-        - MariaDB databases: Most recent database (since it gets overwritten)
-
-
-
-        Returns:
-            dict: Nested structure with database information:
-                {
-                    "SQLite": {
-                        "db_backup_filename": {
-                            "filesize": int,
-                            "backup_filename": str,
-                            "version": str,
-                            "path": str,
-                            "date": float,
-                            "db_status": str,
-                            "table_counts": dict,
-                            "file_exists": bool
-                        }
-                    },
-                    "MariaDB": {
-                        "db_name": {
-                            "table_counts": dict,
-                            "backup_filename": str,
-                            "version": str,
-                            "date": float,
-                            "db_status": str,
-                            "db_size_bytes": int
-                        }
-                    }
-                }
+        SQLite-only implementation – returns historical SQLite databases from cache files.
         """
-        databases = {"SQLite": {}, "MariaDB": {}}
+        databases = {"SQLite": {}}
 
         # Validate inputs
         if not self.device_name:
@@ -1366,9 +1146,8 @@ class DatabasesInfo:
             # Get all cache files for this device
             cache_files = temp_cache._get_all_cache_files()
 
-            # Read each cache file only once and categorize by result writer type
+            # Read each cache file only once
             sqlite_experiments = []
-            mysql_experiments = []
 
             processed_files = 0
 
@@ -1430,16 +1209,13 @@ class DatabasesInfo:
                             ),
                         }
 
-                        # Categorize by result writer type (handle both old class names and new database types)
+                        # Only process SQLite experiments
                         if result_writer_type in ["SQLiteResultWriter", "SQLite3"]:
                             sqlite_experiments.append(experiment_data)
                             processed_files += 1
-                        elif result_writer_type in ["MySQLResultWriter", "MySQL"]:
-                            mysql_experiments.append(experiment_data)
-                            processed_files += 1
                         else:
                             logging.debug(
-                                f"Unknown result writer type '{result_writer_type}' in {cache_file}"
+                                f"Skipping non-SQLite result writer type '{result_writer_type}' in {cache_file}"
                             )
                     else:
                         logging.debug(
@@ -1476,29 +1252,11 @@ class DatabasesInfo:
                     "file_exists": file_exists,
                 }
 
-            # Process MariaDB databases (only most recent)
-            # Sort by date_time to get the most recent first
-            mysql_experiments.sort(key=lambda x: x.get("date_time", 0), reverse=True)
-
-            if mysql_experiments:
-                # Only take the most recent MariaDB database
-                experiment = mysql_experiments[0]
-                db_name = experiment.get("db_name", f"{self.device_name}_db")
-
-                databases["MariaDB"][db_name] = {
-                    "table_counts": experiment.get("table_counts", {}),
-                    "backup_filename": experiment.get("backup_filename", ""),
-                    "version": experiment.get("db_version", "Unknown"),
-                    "date": experiment.get("date_time", 0),
-                    "db_status": experiment.get("db_status", "unknown"),
-                    "db_size_bytes": experiment.get("db_size_bytes", 0),
-                }
-
         except Exception as e:
             logging.warning(f"Failed to get databases info: {e}")
 
         # If no databases were found from cache files, try fallback discovery
-        if not databases["SQLite"] and not databases["MariaDB"]:
+        if not databases["SQLite"]:
             logging.info(
                 f"No databases found in cache for {self.device_name}, attempting direct discovery"
             )
@@ -1510,7 +1268,7 @@ class DatabasesInfo:
         """
         Fallback method to discover databases when cache files are missing or corrupted.
         """
-        databases = {"SQLite": {}, "MariaDB": {}}
+        databases = {"SQLite": {}}
 
         try:
             # Look for SQLite databases in common locations
@@ -1532,7 +1290,9 @@ class DatabasesInfo:
                                 db_path = os.path.join(root, file)
                                 try:
                                     # Quick check if this is a valid SQLite database
-                                    with closing(sqlite3.connect(db_path, timeout=5.0)) as conn:
+                                    with closing(
+                                        sqlite3.connect(db_path, timeout=5.0)
+                                    ) as conn:
                                         cursor = conn.cursor()
                                         cursor.execute(
                                             "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1"

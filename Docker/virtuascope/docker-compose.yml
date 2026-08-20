@@ -13,14 +13,11 @@ services:
     volumes:
       - ../../:/opt/ethoscope:ro  # Uncomment if needed - will mount the host ethoscope folder, useful only for development
       - ethoscope_data:/ethoscope_data
-      - mariadb_socket:/run/mysqld
     devices:
       #- /dev/video0:/dev/video0   # Use video hardware on the computer
       - /dev/video10:/dev/video0  # Use virtual video device
     depends_on:
-      - ethoscope-mariadb
       - video-streamer
-    #network_mode: service:ethoscope-mariadb
     #network_mode: host
 
   video-streamer:
@@ -39,27 +36,8 @@ services:
       - ./video:/video #yt-dlp "https://www.youtube.com/watch?v=uGsWPLsU6ws" -o ./video/raw-ethoscope-video.mkv
     restart: unless-stopped
 
-  ethoscope-mariadb:
-    image: mariadb:latest
-    container_name: ethoscope-mariadb
-    restart: unless-stopped
-    expose:
-      - 3306
-    environment:
-      MYSQL_ROOT_PASSWORD: ethoscope
-    volumes:
-      - mariadb_socket:/run/mysqld
-      - mariadb_data:/var/lib/mysql
-      - ./init_db_credentials.sql:/docker-entrypoint-initdb.d/init-db_credentials.sql
-    #network_mode: host
-    # Uncomment the following line if you want to access your MariaDB instance from your host for development purposes
-    # ports:
-    #   - "3306:3306"
-
 volumes:
   ethoscope_data:
-  mariadb_socket:
-  mariadb_data:
 
 networks:
   default:

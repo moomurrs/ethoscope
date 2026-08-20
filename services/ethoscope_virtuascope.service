@@ -1,6 +1,6 @@
 [Unit]
 Description=Virtuascope running on the node
-Wants=ntpd.service mysqld.service
+Wants=ntpd.service
 After=ntpd.service network.target
 
 

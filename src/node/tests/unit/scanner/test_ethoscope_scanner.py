@@ -346,20 +346,6 @@ class TestEthoscope:
 
     @patch("ethoscope_node.scanner.ethoscope_scanner.ExperimentalDB")
     @patch("ethoscope_node.scanner.ethoscope_scanner.EthoscopeConfiguration")
-    def test_get_backup_filename_for_db_type_mariadb(
-        self, mock_config_class, mock_db_class
-    ):
-        """Test getting backup filename for MariaDB."""
-        device = Ethoscope("192.168.1.100")
-        device._info = {
-            "databases": {"MariaDB": {"test_db": {"backup_filename": "test_maria.db"}}}
-        }
-
-        filename = device._get_backup_filename_for_db_type("MariaDB")
-        assert filename == "test_maria.db"
-
-    @patch("ethoscope_node.scanner.ethoscope_scanner.ExperimentalDB")
-    @patch("ethoscope_node.scanner.ethoscope_scanner.EthoscopeConfiguration")
     def test_cleanup_stream_manager(self, mock_config_class, mock_db_class):
         """Test stream manager cleanup."""
         device = Ethoscope("192.168.1.100")
@@ -948,23 +934,6 @@ class TestEthoscopeBackupFilename:
 
         filename = device._get_appropriate_backup_filename()
         assert filename == "sqlite_backup.db"
-
-    @patch("ethoscope_node.scanner.ethoscope_scanner.ExperimentalDB")
-    @patch("ethoscope_node.scanner.ethoscope_scanner.EthoscopeConfiguration")
-    def test_get_appropriate_backup_filename_mariadb(
-        self, mock_config_class, mock_db_class
-    ):
-        """Test getting MariaDB backup filename from experimental_info."""
-        device = Ethoscope("192.168.1.100")
-        device._info = {
-            "experimental_info": {"current": {"selected_options": "ResultWriter"}},
-            "databases": {
-                "MariaDB": {"test_db": {"backup_filename": "mariadb_backup.db"}}
-            },
-        }
-
-        filename = device._get_appropriate_backup_filename()
-        assert filename == "mariadb_backup.db"
 
     @patch("ethoscope_node.scanner.ethoscope_scanner.ExperimentalDB")
     @patch("ethoscope_node.scanner.ethoscope_scanner.EthoscopeConfiguration")

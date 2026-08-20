@@ -1,21 +1,20 @@
 """
 Database Writers for Ethoscope Experiment Data Storage
 
-This module provides various classes for storing experimental tracking data from the Ethoscope
-behavioral monitoring system. The classes support multiple database backends (MySQL/MariaDB, SQLite)
-and different output formats (database tables, numpy arrays).
+This module provides various classes for storing experimental tracking data
+from the Ethoscope behavioral monitoring system. Uses SQLite as the sole
+database backend.
 
 Class Hierarchy and Relationships:
 ==================================
 
 1. Database Writers (Main Interface):
-   MySQLResultWriter (base class for MySQL database storage)
-   ├── SQLiteResultWriter (extends BaseResultWriter for SQLite-specific behavior)
+   BaseResultWriter (abstract base)
+   ├── SQLiteResultWriter (SQLite-specific implementation)
    └── RawDataWriter (independent class for numpy array storage)
 
 2. Async Database Processes (Multiprocessing):
    multiprocessing.Process
-   ├── AsyncMySQLWriter (handles MySQL/MariaDB writes in separate process)
    └── AsyncSQLiteWriter (handles SQLite writes in separate process)
 
 3. Helper Classes (Data Formatting):
@@ -29,9 +28,9 @@ Class Hierarchy and Relationships:
 
 Interaction Flow:
 ================
-1. MySQLResultWriter/SQLiteResultWriter creates an async writer process (AsyncMySQLWriter/AsyncSQLiteWriter)
-2. MySQLResultWriter sends SQL commands through a multiprocessing queue to the async writer
-3. MySQLResultWriter uses helper classes to format different data types:
+1. SQLiteResultWriter creates an async writer process (AsyncSQLiteWriter)
+2. SQLiteResultWriter sends SQL commands via multiprocessing queue to async writer
+3. SQLiteResultWriter uses helper classes to format different data types:
    - DAMFileHelper for activity summaries
    - ImgSnapshotHelper for periodic screenshots
    - SensorDataHelper for environmental sensor data
@@ -41,7 +40,7 @@ Key Design Patterns:
 ===================
 - Multiprocessing: Async writers run in separate processes to prevent I/O blocking
 - Producer-Consumer: Main thread produces SQL commands, async writer consumes them
-- Template Method: BaseResultWriter provides base implementation, MySQLResultWriter and SQLiteResultWriter override specific methods
+- Template Method: BaseResultWriter provides base implementation, SQLiteResultWriter overrides specific methods
 - Helper Pattern: Separate classes handle formatting for different data types
 - Context Manager: BaseResultWriter implements __enter__/__exit__ for proper cleanup
 """
@@ -56,9 +55,6 @@ from collections import deque
 
 # Import helper classes
 from .helpers import DAMFileHelper, ImgSnapshotHelper, SensorDataHelper
-
-# Character encoding for MariaDB/MySQL connections
-SQL_CHARSET = "latin1"
 
 # Constants
 ASYNC_WRITER_TIMEOUT = 30  # Timeout in seconds for async writer initialization
@@ -415,7 +411,7 @@ class BaseResultWriter:
                 # The subclass should handle flushing lists appropriately
                 pass
         try:
-            command = "INSERT INTO METADATA VALUES (%s, %s)"
+            command = "INSERT INTO METADATA VALUES (?, ?)"
             self._write_async_command(
                 command, ("stop_date_time", str(int(time.time())))
             )
@@ -589,14 +585,14 @@ class BaseResultWriter:
         """Initialize variable mapping table with data types."""
         self._write_async_command("DELETE FROM VAR_MAP")
         for dt in list(data_row.values()):
-            command = "INSERT INTO VAR_MAP VALUES (%s, %s, %s)"
+            command = "INSERT INTO VAR_MAP VALUES (?, ?, ?)"
             self._write_async_command(
                 command, (dt.header_name, dt.sql_data_type, dt.functional_type)
             )
 
     def _initialise_roi_table(self, roi, data_row):
-        """Initialize ROI-specific database table (MySQL version)."""
-        fields = ["id INT  NOT NULL AUTO_INCREMENT PRIMARY KEY", "t INT"]
+        """Initialize ROI-specific database table (SQLite version)."""
+        fields = ["id INTEGER PRIMARY KEY AUTOINCREMENT", "t INTEGER"]
         for dt in list(data_row.values()):
             fields.append(f"{dt.header_name} {dt.sql_data_type}")
         fields = ", ".join(fields)
@@ -871,24 +867,21 @@ class BaseResultWriter:
         except Exception as e:
             logging.error(f"Failed to log I/O diagnostics: {e}")
 
-    def _create_table(self, name, fields, engine="InnoDB"):
+    def _create_table(self, name, fields, engine=None):
         """
         Create a database table with specified fields.
 
         Args:
             name (str): Table name
             fields (str): Field definitions for CREATE TABLE
-            engine (str): Storage engine (default: InnoDB)
+            engine: Ignored for SQLite (kept for backward compat)
         """
-        if engine:
-            command = f"CREATE TABLE IF NOT EXISTS {name} ({fields}) ENGINE={engine}"
-        else:
-            command = f"CREATE TABLE IF NOT EXISTS {name} ({fields})"
+        command = f"CREATE TABLE IF NOT EXISTS {name} ({fields})"
         logging.info("Creating database table with: " + command)
         self._write_async_command(command)
 
     def _insert_metadata(self):
-        """Insert experimental metadata into METADATA table."""
+        """Insert experimental metadata into METADATA table (SQLite)."""
         for k, v in list(self.metadata.items()):
             # Properly serialize complex metadata values to avoid SQL injection and formatting issues
             v_serialized = (
@@ -905,11 +898,7 @@ class BaseResultWriter:
                     f"Metadata value for key '{k}' was truncated due to size limit"
                 )
 
-            # Use database-specific placeholder syntax
-            if self._database_type == "SQLite3":
-                command = "INSERT INTO METADATA VALUES (?, ?)"
-            else:  # MySQL
-                command = "INSERT INTO METADATA VALUES (%s, %s)"
+            command = "INSERT INTO METADATA VALUES (?, ?)"
             self._write_async_command(command, (k, v_serialized))
 
     def _wait_for_queue_empty(self):
@@ -923,19 +912,12 @@ class dbAppender:
     """
     Meta-class for appending to existing databases.
 
-    This class provides a unified interface for appending to both SQLite and MySQL databases.
-    It automatically detects the database type, presents available databases to the user,
-    and wraps around the appropriate writer class with append functionality enabled.
-
-    Features:
-    - Auto-detects database type (SQLite vs MySQL) from selected database
-    - Presents dropdown list of available databases from cache
-    - Wraps around MySQLResultWriter or SQLiteResultWriter with erase_old_db=False
-    - Maintains compatibility with existing frontend dropdown population
+    SQLite-only implementation. Presents available SQLite databases to the user
+    and wraps around SQLiteResultWriter with append functionality enabled.
     """
 
     _description = {
-        "overview": "Database appender - automatically detects database type and appends to existing databases. Supports both SQLite and MySQL/MariaDB databases with unified interface.",
+        "overview": "Database appender - appends to existing SQLite databases.",
         "arguments": [
             {
                 "name": "database_to_append",
@@ -968,22 +950,20 @@ class dbAppender:
         make_dam_like_table=False,
         take_frame_shots=False,
         sensor=None,
-        db_host="localhost",
         *args,
         **kwargs,
     ):
         """
-        Initialize the database appender meta-class.
+        Initialize the database appender meta-class (SQLite only).
 
         Args:
-            db_credentials (dict): Database connection credentials
+            db_credentials (dict): Database connection credentials (sqlite path)
             rois (list): List of ROI objects to track
             metadata (dict): Experimental metadata to store
-            database_to_append (str): Name of database to append to
+            database_to_append (str): Name/path of SQLite database to append to
             make_dam_like_table (bool): Whether to create DAM-compatible activity table
             take_frame_shots (bool): Whether to periodically save image snapshots
             sensor: Optional sensor object for environmental data collection
-            db_host (str): Database server hostname or IP address (for MySQL)
         """
         self.database_to_append = database_to_append
         self.erase_old_db = False
@@ -994,103 +974,17 @@ class dbAppender:
         self.make_dam_like_table = make_dam_like_table
         self.take_frame_shots = take_frame_shots
         self.sensor = sensor
-        self.db_host = db_host
         self.args = args
         self.kwargs = kwargs
 
-        # Detect database type and create appropriate writer
-        self._detect_database_type_and_create_writer()
-
-        logging.info(f"We will be appending database: {database_to_append}")
-
-    def _detect_database_type_and_create_writer(self):
-        """
-        Auto-detect database type from the selected database and create appropriate writer.
-        """
         if not self.database_to_append:
             raise ValueError("database_to_append parameter is required")
 
-        # Detect database type based on file extension and existence
-        db_type = self._detect_database_type(self.database_to_append)
+        # SQLite only – directly create writer
+        logging.info(f"Detected SQLite database: {self.database_to_append}")
+        self._create_sqlite_writer()
 
-        if db_type == "SQLite":
-            logging.info(f"Detected SQLite database: {self.database_to_append}")
-            self._create_sqlite_writer()
-        elif db_type == "MySQL":
-            logging.info(f"Detected MySQL database: {self.database_to_append}")
-            self._create_mysql_writer()
-        else:
-            raise ValueError(
-                f"Could not detect database type for: {self.database_to_append}"
-            )
-
-    def _detect_database_type(self, database_name):
-        """
-        Detect whether the selected database is SQLite or MySQL.
-
-        Args:
-            database_name (str): Name/path of the database
-
-        Returns:
-            str: "SQLite" or "MySQL" or None if cannot detect
-        """
-        # Method 1: Check if it's a file path with SQLite extension
-        if (
-            database_name.endswith(".db")
-            or database_name.endswith(".sqlite")
-            or database_name.endswith(".sqlite3")
-        ):
-            return "SQLite"
-
-        # Method 2: Check if file exists in common SQLite locations
-        sqlite_paths = [
-            f"/ethoscope_data/results/{database_name}",
-            f"/ethoscope_data/results/{database_name}.db",
-            database_name,  # If full path is provided
-        ]
-
-        for path in sqlite_paths:
-            if os.path.exists(path):
-                return "SQLite"
-
-        # Method 3: Check cache for database information
-        try:
-            from .cache import get_all_databases_info
-
-            device_name = self.db_credentials.get("name", "ETHOSCOPE_DEFAULT")
-            if isinstance(device_name, str) and not device_name.startswith(
-                "ETHOSCOPE_"
-            ):
-                # If device_name is a path (SQLite), extract device ID for cache lookup
-                import re
-
-                device_match = re.search(r"([a-f0-9]{32})", device_name)
-                if device_match:
-                    device_name = f"ETHOSCOPE_{device_match.group(1)[:8].upper()}"
-
-            databases_info = get_all_databases_info(device_name)
-
-            # Check SQLite databases
-            if databases_info.get("SQLite", {}).get(database_name):
-                return "SQLite"
-
-            # Check MySQL databases
-            if databases_info.get("MariaDB", {}).get(database_name):
-                return "MySQL"
-
-        except Exception as e:
-            logging.warning(f"Could not check cache for database type detection: {e}")
-
-        # Method 4: Default assumption based on database name patterns
-        # If no file extension and not found as file, assume MySQL
-        if (
-            "/" not in database_name
-            and "\\" not in database_name
-            and "." not in database_name
-        ):
-            return "MySQL"
-
-        return None
+        logging.info(f"We will be appending database: {database_to_append}")
 
     def _create_sqlite_writer(self):
         """Create SQLite writer with append functionality."""
@@ -1119,29 +1013,6 @@ class dbAppender:
             make_dam_like_table=self.make_dam_like_table,
             take_frame_shots=self.take_frame_shots,
             sensor=self.sensor,
-            **self.kwargs,
-        )
-
-    def _create_mysql_writer(self):
-        """Create MySQL writer with append functionality."""
-        # Lazy import to avoid circular dependency
-        from .mysql import MySQLResultWriter
-
-        # Update db_credentials to point to the existing database
-        mysql_db_credentials = self.db_credentials.copy()
-        mysql_db_credentials["name"] = self.database_to_append
-
-        # Create MySQL writer with erase_old_db=False for append functionality
-        self.kwargs.update({"erase_old_db": False})
-        self._writer = MySQLResultWriter(
-            mysql_db_credentials,
-            self.rois,
-            *self.args,
-            metadata=self.metadata,
-            make_dam_like_table=self.make_dam_like_table,
-            take_frame_shots=self.take_frame_shots,
-            sensor=self.sensor,
-            db_host=self.db_host,
             **self.kwargs,
         )
 
@@ -1234,19 +1105,6 @@ class dbAppender:
                             "path": db_info.get("path", ""),
                         }
                     )
-
-            # Add MySQL databases
-            mysql_dbs = databases_info.get("MariaDB", {})
-            for db_name, db_info in mysql_dbs.items():
-                databases_list.append(
-                    {
-                        "name": db_name,
-                        "type": "MySQL",
-                        "active": True,
-                        "size": db_info.get("db_size_bytes", 0),
-                        "status": db_info.get("db_status", "unknown"),
-                    }
-                )
 
         except Exception as e:
             logging.error(f"Error getting available databases: {e}")

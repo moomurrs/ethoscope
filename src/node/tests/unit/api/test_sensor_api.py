@@ -48,12 +48,13 @@ class TestSensorAPI(unittest.TestCase):
         # Register routes
         self.api.register_routes()
 
-        # Verify all 4 routes were registered
-        self.assertEqual(len(route_calls), 4)
+        # Verify all 5 routes were registered
+        self.assertEqual(len(route_calls), 5)
 
         # Check specific routes
         paths = [call[0] for call in route_calls]
         self.assertIn("/sensors", paths)
+        self.assertIn("/sensors/merged", paths)
         self.assertIn("/sensor/set", paths)
         self.assertIn("/list_sensor_csv_files", paths)
         self.assertIn("/get_sensor_csv_data/<filename>", paths)

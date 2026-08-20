@@ -12,8 +12,7 @@ class AsyncSQLiteWriter(BaseAsyncSQLWriter):
     """
     Asynchronous SQLite database writer running in a separate process.
 
-    Similar to AsyncMySQLWriter but for SQLite databases. Uses specific
-    PRAGMA settings for optimal performance with single-writer pattern.
+    Uses specific PRAGMA settings for optimal performance with single-writer pattern.
     Each experiment creates a unique database file, preserving historical data.
 
     Attributes:

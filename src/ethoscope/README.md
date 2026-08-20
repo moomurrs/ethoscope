@@ -101,7 +101,6 @@ _Note: You do not need to reinstall the package every time you make changes to P
 - `picamera>=1.8` - Raspberry Pi camera interface
 - `cherrypy>=3.6.0` - Web server framework
 - `bottle>=0.12.8` - Lightweight web framework
-- `mysql-connector-python>=8.0.16` - Database connectivity
 - `pyserial>=2.7` - Serial communication
 - `GitPython>=1.0.1` - Git integration for updates
 

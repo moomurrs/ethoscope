@@ -67,10 +67,6 @@ if [[ "$ALL_FLAG" == "true" ]]; then
         echo "Restarting ethoscope_update_node.service..."
         sudo systemctl restart ethoscope_update_node.service
 
-    elif systemctl is-active --quiet ethoscope_backup_mysql.service; then
-        echo "Restarting ethoscope_backup_mysql.service..."
-        sudo systemctl restart ethoscope_backup_mysql.service
-
     elif systemctl is-active --quiet ethoscope_backup_video.service; then
         echo "Restarting ethoscope_backup_video.service..."
         sudo systemctl restart ethoscope_backup_video.service

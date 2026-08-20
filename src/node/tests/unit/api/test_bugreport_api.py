@@ -378,14 +378,12 @@ Buffers:         1000000 kB
 
     @patch("subprocess.run")
     def test_collect_backup_status(self, mock_run):
-        """Test backup status collection."""
+        """Test backup status collection (SQLite/rsync only)."""
 
         def mock_systemctl(*args, **kwargs):
             cmd = args[0]
-            if "ethoscope_backup_mysql" in cmd:
+            if "ethoscope_backup_unified" in cmd:
                 return Mock(returncode=0, stdout="active\n")
-            elif "ethoscope_backup_unified" in cmd:
-                return Mock(returncode=0, stdout="inactive\n")
             return Mock(returncode=1, stdout="")
 
         mock_run.side_effect = mock_systemctl
@@ -393,9 +391,7 @@ Buffers:         1000000 kB
 
         result = self.api._collect_backup_status(errors)
 
-        self.assertIn("mysql", result)
         self.assertIn("rsync", result)
-        self.assertTrue(result["mysql"]["available"])
         self.assertTrue(result["rsync"]["available"])
 
     def test_collect_configuration(self):

@@ -1,8 +1,7 @@
 """
 Backup API Module
 
-Handles backup system management by aggregating basic status information
-from MySQL (port 8090) and rsync (port 8093) backup services.
+Handles backup system management by aggregating status from rsync backup service.
 """
 
 import json
@@ -30,7 +29,7 @@ class BackupAPI(BaseAPI):
 
     @error_decorator
     def _get_backup_status(self):
-        """Get basic backup status aggregated from backup services."""
+        """Get backup status aggregated from backup services (SQLite/rsync only)."""
         self.set_json_response()
 
         # Check cache first
@@ -42,28 +41,21 @@ class BackupAPI(BaseAPI):
         ):
             return self._backup_cache["data"]
 
-        # Fetch basic status from both backup services
-        mysql_status = self._fetch_backup_service_status(8090, "MySQL")
+        # Fetch status from rsync backup service only (SQLite)
         rsync_status = self._fetch_backup_service_status(8093, "Rsync")
 
         # Determine which devices are currently being processed
-        processing_devices = self._get_processing_devices(mysql_status, rsync_status)
+        processing_devices = self._get_processing_devices(rsync_status)
 
         # Get device-level backup information for home page icons
         devices_backup_info = self._get_devices_backup_summary(processing_devices)
 
         # Determine service availability
-        mysql_available = "error" not in mysql_status
         rsync_available = "error" not in rsync_status
 
-        # Create aggregated response with device-level data and summary
+        # Create aggregated response
         aggregated_status = {
             "services": {
-                "mysql_backup": {
-                    "available": mysql_available,
-                    "current_device": self._extract_current_device(mysql_status),
-                    "current_file": self._extract_current_file(mysql_status),
-                },
                 "rsync_backup": {
                     "available": rsync_available,
                     "current_device": self._extract_current_device(rsync_status),
@@ -71,10 +63,8 @@ class BackupAPI(BaseAPI):
                 },
             },
             "summary": {
-                "mysql_backup_available": mysql_available,
                 "rsync_backup_available": rsync_available,
                 "services": {
-                    "mysql_service_available": mysql_available,
                     "rsync_service_available": rsync_available,
                 },
             },
@@ -153,12 +143,11 @@ class BackupAPI(BaseAPI):
 
         return None
 
-    def _get_processing_devices(self, mysql_status, rsync_status):
-        """Get list of all currently processing devices from backup services."""
+    def _get_processing_devices(self, rsync_status=None):
+        """Get list of all currently processing devices from backup services (SQLite/rsync only)."""
         processing = []
 
         # Extract all processing devices from rsync service
-        # The rsync status nests device data under a "devices" key
         if isinstance(rsync_status, dict) and "error" not in rsync_status:
             rsync_devices = rsync_status.get("devices", {})
             for _dev_id, dev_data in rsync_devices.items():
@@ -174,7 +163,6 @@ class BackupAPI(BaseAPI):
         devices_backup = {}
 
         # Build a lookup of which device names are currently being processed
-        # and by which service (mysql or rsync)
         processing_by_name = {}
         for proc in processing_devices or []:
             name = proc.get("device")
@@ -192,15 +180,12 @@ class BackupAPI(BaseAPI):
             # For each device, get basic backup information
             for device_id, device_info in devices.items():
                 try:
-                    # For summary endpoint, use a more efficient approach
-                    # Check if device is online and has database information
                     device_status = device_info.get("status", "offline")
                     has_databases = (
                         "databases" in device_info and device_info["databases"]
                     )
 
                     if device_status != "offline" and has_databases:
-                        # Get backup info for online devices with database info
                         from ethoscope_node.backup.helpers import get_device_backup_info
 
                         device_databases = device_info.get("databases", {})
@@ -209,8 +194,6 @@ class BackupAPI(BaseAPI):
                         )
                         backup_status = backup_info.get("backup_status", {})
 
-                        # Extract detailed backup information for home page display
-                        mysql_info = backup_status.get("mysql", {})
                         sqlite_info = backup_status.get("sqlite", {})
                         video_info = backup_status.get("video", {})
 
@@ -218,16 +201,15 @@ class BackupAPI(BaseAPI):
                         device_name = device_info.get("name", "")
                         active_services = processing_by_name.get(device_name, set())
 
-                        # Calculate overall status
+                        # Calculate overall status (sqlite + video only)
                         available_count = sum(
                             [
-                                mysql_info.get("available", False),
                                 sqlite_info.get("available", False),
                                 video_info.get("available", False),
                             ]
                         )
 
-                        if available_count == 3:
+                        if available_count == 2:
                             overall_status = "success"
                         elif available_count > 0:
                             overall_status = "partial"
@@ -237,20 +219,6 @@ class BackupAPI(BaseAPI):
                         # Create structure for home page with required fields
                         device_backup_data = {
                             "backup_types": {
-                                "mysql": {
-                                    "available": mysql_info.get("available", False),
-                                    "status": (
-                                        "success"
-                                        if mysql_info.get("available", False)
-                                        else "not_available"
-                                    ),
-                                    "processing": "mysql" in active_services,
-                                    "size": mysql_info.get("total_size_bytes", 0),
-                                    "last_backup": mysql_info.get("last_backup", 0),
-                                    "records": mysql_info.get("database_count", 0),
-                                    "directory": mysql_info.get("directory", ""),
-                                    "message": mysql_info.get("message", ""),
-                                },
                                 "sqlite": {
                                     "available": sqlite_info.get("available", False),
                                     "status": (
@@ -282,19 +250,9 @@ class BackupAPI(BaseAPI):
                             "overall_status": overall_status,
                         }
                     else:
-                        # For offline devices or devices without database info, show as not available
+                        # For offline devices or devices without database info
                         device_backup_data = {
                             "backup_types": {
-                                "mysql": {
-                                    "available": False,
-                                    "status": "offline",
-                                    "processing": False,
-                                    "size": 0,
-                                    "last_backup": 0,
-                                    "records": 0,
-                                    "directory": "",
-                                    "message": "",
-                                },
                                 "sqlite": {
                                     "available": False,
                                     "status": "offline",
@@ -321,19 +279,8 @@ class BackupAPI(BaseAPI):
                     devices_backup[device_id] = device_backup_data
 
                 except Exception:
-                    # If we can't get backup info for this device, mark as unknown
                     devices_backup[device_id] = {
                         "backup_types": {
-                            "mysql": {
-                                "available": False,
-                                "status": "unknown",
-                                "processing": False,
-                                "size": 0,
-                                "last_backup": 0,
-                                "records": 0,
-                                "directory": "",
-                                "message": "",
-                            },
                             "sqlite": {
                                 "available": False,
                                 "status": "unknown",
@@ -358,7 +305,6 @@ class BackupAPI(BaseAPI):
                     }
 
         except Exception:
-            # If we can't get device list, return empty dict
             pass
 
         return devices_backup

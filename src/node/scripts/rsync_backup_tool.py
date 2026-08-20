@@ -452,7 +452,7 @@ def main():
                                 f"Skipping ETHOSCOPE_{ethoscope:03d} - no SQLite database found"
                             )
                             print(
-                                "This device should be backed up by the MariaDB backup service instead"
+                                "No SQLite database found – unified rsync backup requires SQLiteResultWriter"
                             )
                             exit(
                                 f"ETHOSCOPE_{ethoscope:03d} has no SQLite database for rsync backup"
