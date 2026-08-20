@@ -1,7 +1,5 @@
 # Root level pyproject.toml for the entire Ethoscope project
 
-
-
 [tool.ruff]
 line-length = 88
 target-version = "py312"
@@ -68,3 +66,10 @@ extend-select = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["ethoscope", "ethoscope_node"]
+
+[tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion="3.12"
+typeCheckingMode = "standard"
+extraPaths = ["src/ethoscope", "src/node"]
