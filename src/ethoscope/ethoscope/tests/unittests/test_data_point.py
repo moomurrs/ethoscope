@@ -1,7 +1,7 @@
 """
 Unit tests for DataPoint container class.
 
-Tests the DataPoint OrderedDict-based container for tracking variables.
+Tests the DataPoint dict-based container for tracking variables.
 """
 
 import unittest
@@ -49,7 +49,7 @@ class TestDataPoint(unittest.TestCase):
 
         data = DataPoint([x, y, w, h])
 
-        # OrderedDict should preserve order
+        # dict should preserve order
         keys = list(data.keys())
         self.assertEqual(keys, ["x", "y", "w", "h"])
 

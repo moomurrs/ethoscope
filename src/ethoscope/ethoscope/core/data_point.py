@@ -1,50 +1,64 @@
-import collections
-import copy
+"""Container for tracking variables keyed by header name."""
 
-__author__ = "quentin"
+# author: quentin
+# refactor: moomurrs
+
+from collections.abc import Iterable
+from typing import Self
+
+from .variables import BaseIntVariable
 
 
-class DataPoint(collections.OrderedDict):
+class DataPoint(dict[str, BaseIntVariable]):
+    """An insertion-ordered container of variables keyed by header name.
 
-    def __init__(self, data):
+    Variables are accessible by header name, which is an individual identifier
+    of a variable type (see :class:`~ethoscope.core.variables.BaseIntVariable`):
+
+    >>> from ethoscope.core.variables import XPosVariable, YPosVariable, HeightVariable
+    >>> point = DataPoint([XPosVariable(32), YPosVariable(18)])
+    >>> point["x"]
+    32
+    >>> point.append(HeightVariable(3))
+    >>> point["h"]
+    3
+
+    Insertion order is preserved and is relied upon downstream (e.g. the result
+    writers derive SQL column order from it). Appending a variable whose header
+    name already exists replaces it in place.
+
+    """
+
+    __slots__ = ()
+
+    def __init__(self, data: Iterable[BaseIntVariable]) -> None:
+        """Initialize the data point from an iterable of variables.
+
+        Args:
+            data: The variables to store; each is keyed by its ``header_name``.
+                If several variables share a header name, the last one wins.
         """
-        A container to store variables. It derived from :class:`~collections.OrderedDict`.
-        Variables are accessible by header name, which is an individual identifier
-        of a variable type (see :class:`~ethoscope.core.variables.BaseIntVariable`):
+        super().__init__((variable.header_name, variable) for variable in data)
 
-        >>> from ethoscope.core.variables import DataPoint, XPosVariable, YPosVariable, HeightVariable
-        >>> y = YPosVariable(18)
-        >>> x = XPosVariable(32)
-        >>> data = DataPoint([x,y])
-        >>> print data["x"]
-        >>> h = HeightVariable(3)
-        >>> data.append(h)
-        >>> print data
+    def copy(self) -> Self:
+        """Return a new data point holding the same variables, in the same order.
 
+        Copying with the ``=`` operator merely creates an alias to this
+        ``DataPoint`` object. In contrast, this method returns an independent
+        container. Because variables are immutable, their values are shared
+        between the original and the copy.
 
-        :param data: a list of data points
-        :type data: list(:class:`~ethoscope.core.variables.BaseIntVariable`)
+        Returns:
+            A copy of this object.
         """
-        collections.OrderedDict.__init__(self)
-        for i in data:
-            self.__setitem__(i.header_name, i)
+        return type(self)(self.values())
 
-    def copy(self):
-        """
-        Deep copy a data point. Copying using the `=` operator will simply create an alias to a `DataPoint`
-        object (i.e. allow modification of the original object).
+    def append(self, item: BaseIntVariable) -> None:
+        """Add a new variable to the data point; insertion order is preserved.
 
-        :return: a copy of this object
-        :rtype: :class:`~ethoscope.core.data_point.DataPoint`
-        """
-        return DataPoint(copy.deepcopy(list(self.values())))
+        If a variable with the same header name already exists, it is replaced.
 
-    def append(self, item):
+        Args:
+            item: The variable to be added.
         """
-        Add a new variable in the `DataPoint` The order is preserved.
-
-        :param item: A variable to be added.
-        :param item: :class:`~ethoscope.core.variables.BaseIntVariable`
-        :return:
-        """
-        self.__setitem__(item.header_name, item)
+        self[item.header_name] = item
