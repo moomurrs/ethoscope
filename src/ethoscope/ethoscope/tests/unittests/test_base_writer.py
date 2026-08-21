@@ -544,6 +544,7 @@ class TestBaseResultWriterWriteFlush(unittest.TestCase):
         writer._max_insert_string_len = 1000
         writer._last_t = 0
         writer._rois = []
+        writer._initialized_rois = set()
         return writer
 
     def test_write_initialises_var_map_on_first_call(self):

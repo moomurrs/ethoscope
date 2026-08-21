@@ -172,7 +172,9 @@ class TestSensorDataHelper(unittest.TestCase):
         self.assertIn("INSERT into SENSORS", command)
         # SQLite skips ID column (AUTOINCREMENT handles it)
         self.assertNotIn(",id", command.lower())
-        self.assertIn("120000", command)
+        # New parameterized implementation: timestamp in args, not in command string
+        self.assertIn("?", command)
+        self.assertIn(120000, args)
 
     def test_flush_handles_sensor_error(self):
         """Test flush handles sensor read errors gracefully."""

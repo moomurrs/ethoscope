@@ -75,7 +75,7 @@ class TestGetLastTimestampGaps:
         db_path.write_bytes(b"x")
         writer = self._shell(str(db_path))
         with patch(
-            "ethoscope.io.sqlite.os.path.getsize",
+            "ethoscope.io.sqlite.Path.stat",
             side_effect=OSError("permission denied"),
         ):
             assert writer.get_last_timestamp() == 0

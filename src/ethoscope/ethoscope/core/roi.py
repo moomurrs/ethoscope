@@ -57,7 +57,7 @@ class ROI:
             )
 
     @property
-    def idx(self):
+    def idx(self) -> int:
         """
         :return: The index of this ROI
         :rtype: int
@@ -93,7 +93,7 @@ class ROI:
         return self._polygon
 
     @property
-    def longest_axis(self):
+    def longest_axis(self) -> float:
         """
         :return: the value of the longest axis (w or h)
         :rtype: float
@@ -109,7 +109,7 @@ class ROI:
         """
         return self._rectangle
 
-    def get_feature_dict(self):
+    def get_feature_dict(self) -> dict[str, int]:
         """
         :return: A dictionary of freatures for this roi. It containes the folowing fields:
 

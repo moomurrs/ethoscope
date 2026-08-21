@@ -1,548 +1,534 @@
+"""Helper classes for ethoscope I/O - sensor, snapshots, DAM and raw data."""
+
+from __future__ import annotations
+
 import datetime
 import logging
-import os
 import tempfile
 import time
+import weakref
 from collections import OrderedDict
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Final, Self
 
 import numpy as np
 from cv2 import IMWRITE_JPEG_QUALITY, imwrite
 
-# Constants from base.py
-SENSOR_DEFAULT_PERIOD = 120.0  # Default sensor sampling period in seconds
-IMG_SNAPSHOT_DEFAULT_PERIOD = (
-    300.0  # Default image snapshot period in seconds (5 minutes)
+from ._constants import (
+    DAM_DEFAULT_PERIOD,
+    DAM_SCALE,
+    IMG_SNAPSHOT_DEFAULT_PERIOD,
+    SENSOR_DEFAULT_PERIOD,
 )
-DAM_DEFAULT_PERIOD = 60.0  # Default DAM activity sampling period in seconds
+from ._sql import map_mysql_to_sqlite
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    import numpy.typing as npt
+
+    from ._types import ROIProtocol, SensorProtocol
+
+_LOGGER: Final = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Sensor helper
+# ---------------------------------------------------------------------------
 
 
 class SensorDataHelper:
+    """Periodically sample a sensor and emit a parameterized INSERT.
+
+    The helper is deliberately I/O-free apart from calling ``sensor.read_all()``.
+    It returns a ``(sql, args)`` tuple when the sampling period has elapsed,
+    otherwise ``None``.  The caller is responsible for executing the statement.
+
+    Args:
+        sensor: Object with ``read_all() -> tuple`` and ``sensor_types: dict``.
+        period: Sampling period in seconds.
+        database_type: Kept for backward compatibility - always ``SQLite3``.
     """
-    Helper class for saving sensor data to database at regular intervals.
 
-    This class manages the periodic sampling and storage of sensor readings
-    (e.g., temperature, humidity) into the database.
+    _table_name: Final[str] = "SENSORS"
 
-    Attributes:
-        _table_name (str): Name of the sensor data table
-        _base_headers (dict): Base columns for the sensor table (id and timestamp)
-    """
+    def __init__(
+        self,
+        sensor: SensorProtocol,
+        period: float = SENSOR_DEFAULT_PERIOD,
+        database_type: str = "SQLite3",
+    ) -> None:
+        self._period: float = period
+        self._last_tick: int = 0
+        self.sensor: SensorProtocol = sensor
+        self._database_type: str = "SQLite3"
 
-    _table_name = "SENSORS"
-
-    def __init__(self, sensor, period=SENSOR_DEFAULT_PERIOD, database_type="SQLite3"):
-        """
-        Initialize the sensor data helper.
-
-        Args:
-            sensor: Sensor object with read_all() method and sensor_types property
-            period (float): Sampling period in seconds (default: 120s)
-            database_type (str): Database type - kept for backward compat, always SQLite3
-        """
-        self._period = period
-        self._last_tick = 0
-        self.sensor = sensor
-        self._database_type = "SQLite3"
-
-        self._base_headers = {
+        self._base_headers: dict[str, str] = {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
             "t": "INTEGER",
         }
-
-        # Build table headers with appropriate data types
-        self._table_headers = {
+        self._table_headers: dict[str, str] = {
             **self._base_headers,
             **self._get_sensor_types_for_database(),
         }
 
-    def flush(self, t):
-        """
-        Save sensor data if enough time has elapsed since last save.
+    # -- public API -------------------------------------------------------
 
-        Args:
-            t (int): Current time in milliseconds
+    def flush(self, t: int) -> tuple[str, tuple[Any, ...]] | None:
+        """Return a parameterized INSERT if the period has elapsed.
 
         Returns:
-            tuple: (SQL command, args) or None if not time to save
+            ``(sql, args)`` with ``?`` placeholders, or ``None`` if the tick
+            has not advanced.  Errors from the sensor are logged and ``None``
+            is returned so the caller can continue.
         """
-        tick = int(round((t / 1000.0) / self._period))
+        tick = round((t / 1000.0) / self._period)
         if tick == self._last_tick:
-            return
+            return None
         try:
-            values = [str(v) for v in ((int(t),) + self.sensor.read_all())]
-            columns = list(self._table_headers.keys())[1:]  # Skip 'id' column
+            # Build parameterized command - prevents SQL injection and preserves types
+            columns = list(self._table_headers.keys())[1:]  # skip 'id'
+            placeholders = ", ".join(["?"] * (len(columns)))
+            cols_joined = ",".join(columns)
             cmd = (
-                "INSERT into "
-                + self._table_name
-                + " ("
-                + ",".join(columns)
-                + ")"
-                + " VALUES ("
-                + ",".join(values)
-                + ")"
+                f"INSERT into {self._table_name} ({cols_joined}) "
+                f"VALUES ({placeholders})"
             )
-            self._last_tick = tick
-            return cmd, None
-
+            # args: (t, *sensor_values)
+            sensor_values = self.sensor.read_all()
+            args: tuple[Any, ...] = (int(t), *sensor_values)
         except Exception:
-            logging.error("The sensor data are not available")
+            _LOGGER.exception("The sensor data are not available")
             self._last_tick = tick
-            return
+            return None
+        else:
+            self._last_tick = tick
+            return cmd, args
 
     @property
-    def table_name(self):
-        """Get the sensor table name."""
+    def table_name(self) -> str:
+        """Name of the sensor data table."""
         return self._table_name
 
-    def _get_sensor_types_for_database(self):
-        """
-        Convert sensor types to appropriate database format (SQLite only).
+    @property
+    def create_command(self) -> str:
+        """SQL column definitions for ``CREATE TABLE``."""
+        return ",".join(f"{k} {v}" for k, v in self._table_headers.items())
 
-        Returns:
-            dict: Sensor field names mapped to SQLite data types
+    # -- private --------------------------------------------------------
+
+    def _get_sensor_types_for_database(self) -> dict[str, str]:
+        """Map sensor ``sensor_types`` to SQLite types.
+
+        Unknown MySQL types fall back to ``TEXT``.
         """
         if not hasattr(self.sensor, "sensor_types"):
             return {}
-
-        sensor_types = {}
+        sensor_types: dict[str, str] = {}
         for field_name, mysql_type in self.sensor.sensor_types.items():
-            # Convert MySQL types to SQLite equivalents
-            if mysql_type.upper() in ["FLOAT", "DOUBLE"]:
-                sqlite_type = "REAL"
-            elif mysql_type.upper().startswith("INT"):
-                sqlite_type = "INTEGER"
-            elif mysql_type.upper().startswith(("CHAR", "VARCHAR", "TEXT")):
-                sqlite_type = "TEXT"
-            else:
-                sqlite_type = "TEXT"  # Default fallback
-            sensor_types[field_name] = sqlite_type
-
+            sensor_types[field_name] = map_mysql_to_sqlite(str(mysql_type))
         return sensor_types
 
-    @property
-    def create_command(self):
-        """Generate SQL CREATE TABLE command for sensor data."""
-        return ",".join(
-            [f"{key} {self._table_headers[key]}" for key in self._table_headers]
-        )
+
+# ---------------------------------------------------------------------------
+# Image snapshot helper - context-managed, no __del__
+# ---------------------------------------------------------------------------
 
 
 class ImgSnapshotHelper:
+    """Periodically JPEG-compress a frame and emit a parameterized INSERT.
+
+    The helper owns a single temporary file created with
+    :func:`tempfile.NamedTemporaryFile`.  Resource cleanup is guaranteed via
+    the context-manager protocol and :func:`weakref.finalize`; ``__del__`` is
+    not used (see Directive 6).
+
+    Args:
+        period: Snapshot interval in seconds.
+        database_type: Kept for backward compatibility - always ``SQLite3``.
     """
-    Helper class for saving image snapshots to database at regular intervals.
 
-    This class handles periodic capture and storage of JPEG-compressed images
-    from the experiment video feed into the database as BLOBs.
+    _table_name: Final[str] = "IMG_SNAPSHOTS"
 
-    Attributes:
-        _table_name (str): Name of the image snapshots table
-        _table_headers (dict): Column definitions for the snapshots table
-    """
+    def __init__(
+        self,
+        period: float = IMG_SNAPSHOT_DEFAULT_PERIOD,
+        database_type: str = "SQLite3",
+    ) -> None:
+        self._period: float = period
+        self._last_tick: int = 0
+        self._database_type: str = "SQLite3"
+        # Use NamedTemporaryFile to avoid mktemp race; keep name for compatibility
+        tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            prefix="ethoscope_", suffix=".jpg", delete=False
+        )
+        self._tmp_file: str = tmp.name
+        tmp.close()
+        # Ensure cleanup even if user forgets to call close() / use `with`
+        self._finalizer = weakref.finalize(self, Path(self._tmp_file).unlink, True)
 
-    _table_name = "IMG_SNAPSHOTS"
-
-    def __init__(self, period=IMG_SNAPSHOT_DEFAULT_PERIOD, database_type="SQLite3"):
-        """
-        Initialize the image snapshot helper.
-
-        Args:
-            period (float): Snapshot interval in seconds (default: 300s/5min)
-            database_type (str): Database type - kept for backward compat, always SQLite3
-        """
-        self._period = period
-        self._last_tick = 0
-        self._database_type = "SQLite3"
-        self._tmp_file = tempfile.mktemp(prefix="ethoscope_", suffix=".jpg")
-
-        self._table_headers = {
+        self._table_headers: dict[str, str] = {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
             "t": "INTEGER",
             "img": "BLOB",
         }
 
+    # -- context manager --------------------------------------------------
+
+    def __enter__(self) -> Self:
+        """Enter context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> None:
+        """Exit context manager, cleaning up the temp file."""
+        self.close()
+
+    def close(self) -> None:
+        """Remove the temporary JPEG file if it exists."""
+        try:
+            Path(self._tmp_file).unlink(missing_ok=True)
+        except OSError as exc:
+            _LOGGER.warning("Could not remove temp file %s: %s", self._tmp_file, exc)
+        # Detach finalizer if we cleaned up successfully
+        if hasattr(self, "_finalizer"):
+            self._finalizer.detach()
+
     @property
-    def table_name(self):
-        """Get the image snapshots table name."""
+    def table_name(self) -> str:
+        """Name of the image snapshot table."""
         return self._table_name
 
     @property
-    def create_command(self):
-        """Generate SQL CREATE TABLE command for image snapshots."""
-        return ",".join(
-            [f"{key} {self._table_headers[key]}" for key in self._table_headers]
-        )
+    def create_command(self) -> str:
+        """SQL column definitions for ``CREATE TABLE``."""
+        return ",".join(f"{k} {v}" for k, v in self._table_headers.items())
 
-    def __del__(self):
-        """Cleanup temporary file on object destruction."""
-        try:
-            os.remove(self._tmp_file)
-        except Exception:
-            logging.error(f"Could not remove temp file: {self._tmp_file}")
-
-    def flush(self, t, img):
-        """
-        Save image snapshot if enough time has elapsed.
+    def flush(
+        self, t: int, img: npt.NDArray[Any]
+    ) -> tuple[str, tuple[int, bytes]] | None:
+        """Return a parameterized INSERT with JPEG bytes if period elapsed.
 
         Args:
-            t (int): Current time in milliseconds
-            img (np.ndarray): Image array to save
+            t: Timestamp in milliseconds.
+            img: Image to compress (``np.ndarray``).
 
         Returns:
-            tuple: (SQL command, args) or None if not time to save
+            ``(sql, (t, jpeg_bytes))`` or ``None`` when not yet time.
         """
-        tick = int(round((t / 1000.0) / self._period))
+        tick = round((t / 1000.0) / self._period)
         if tick == self._last_tick:
-            return
-        imwrite(self._tmp_file, img, [int(IMWRITE_JPEG_QUALITY), 50])
-        with open(self._tmp_file, "rb") as f:
-            bstring = f.read()
+            return None
+        # Compress to temp file then read bytes - keeps memory bounded for large frames
+        # Using `imwrite` with explicit `dst` not applicable; file is required for cv2.
+        success = imwrite(self._tmp_file, img, [int(IMWRITE_JPEG_QUALITY), 50])
+        if not success:
+            _LOGGER.warning("Failed to write JPEG snapshot at t=%s", t)
+            self._last_tick = tick
+            return None
+        try:
+            with Path(self._tmp_file).open("rb") as fh:
+                bstring = fh.read()
+        except OSError:
+            _LOGGER.exception("Failed to read snapshot file")
+            self._last_tick = tick
+            return None
 
-        cmd = "INSERT INTO " + self._table_name + "(t,img) VALUES (?,?)"
-        args = (int(t), bstring)
-
+        cmd = f"INSERT INTO {self._table_name}(t,img) VALUES (?,?)"
+        args: tuple[int, bytes] = (int(t), bstring)
         self._last_tick = tick
         return cmd, args
 
 
+# ---------------------------------------------------------------------------
+# DAM helper
+# ---------------------------------------------------------------------------
+
+
 class DAMFileHelper:
-    """
-    Helper class for generating DAM (Drosophila Activity Monitor) compatible data.
+    """Track per-ROI activity and emit DAM-compatible INSERT statements.
 
-    This class tracks movement activity for each ROI and formats it in a way
-    compatible with the DAM file format, allowing integration with existing
-    Drosophila activity analysis tools.
+    Activity is the Euclidean distance travelled between successive positions,
+    normalized by ``roi.longest_axis`` and scaled by :data:`DAM_SCALE`.
     """
 
-    def __init__(self, period=DAM_DEFAULT_PERIOD, n_rois=32):
-        """
-        Initialize the DAM file helper.
+    def __init__(self, period: float = DAM_DEFAULT_PERIOD, n_rois: int = 32) -> None:
+        self._period: float = period
+        self._n_rois: int = n_rois
+        self._scale: int = DAM_SCALE
+        # Keep OrderedDict for backward compat with existing tests
+        self._activity_accum: OrderedDict[int, OrderedDict[int, float]] = OrderedDict()
+        self._distance_map: dict[int, float] = dict.fromkeys(range(1, n_rois + 1), 0)
+        self._last_positions: dict[int, complex | None] = dict.fromkeys(
+            range(1, n_rois + 1)
+        )
 
-        Args:
-            period (float): Activity sampling period in seconds (default: 60s)
-            n_rois (int): Number of regions of interest (default: 32)
-        """
-        self._period = period
-        self._activity_accum = OrderedDict()
-        self._n_rois = n_rois
-        self._distance_map = {}
-        self._last_positions = {}
-        self._scale = 100  # multiply by this factor before converting to int activity
-        for i in range(1, self._n_rois + 1):
-            self._distance_map[i] = 0
-            self._last_positions[i] = None
+    # -- public API -------------------------------------------------------
 
-    def make_dam_file_sql_fields(self):
-        """
-        Generate SQL field definitions for DAM-compatible activity table (SQLite).
-
-        Returns:
-            str: Comma-separated field definitions for CREATE TABLE
-        """
+    def make_dam_file_sql_fields(self) -> str:
+        """Return comma-separated column definitions for ``CSV_DAM_ACTIVITY``."""
         fields = [
             "id INTEGER PRIMARY KEY AUTOINCREMENT",
             "date TEXT",
             "time TEXT",
         ]
-        for r in range(1, self._n_rois + 1):
-            fields.append(f"ROI_{r} INTEGER")
-        fields = ",".join(fields)
-        return fields
+        fields.extend(f"ROI_{r} INTEGER" for r in range(1, self._n_rois + 1))
+        return ",".join(fields)
 
-    def _compute_distance_for_roi(self, roi, data):
-        """
-        Calculate normalized movement distance for a single ROI.
+    def input_roi_data(self, t: int, roi: ROIProtocol, data: Mapping[str, Any]) -> None:
+        """Record activity for a single ROI at time ``t``.
 
         Args:
-            roi: ROI object with idx and longest_axis properties
-            data (dict): Position data with 'x' and 'y' coordinates
-
-        Returns:
-            float: Normalized distance moved since last position
+            t: Timestamp in milliseconds.
+            roi: ROI with ``idx`` and ``longest_axis``.
+            data: Mapping with ``x`` and ``y`` coordinates.
         """
-        last_pos = self._last_positions[roi.idx]
-        current_pos = data["x"] + 1j * data["y"]
-        if last_pos is None:
-            self._last_positions[roi.idx] = current_pos
-            return 0
-        dist = abs(current_pos - last_pos)
-        dist /= roi.longest_axis
-        self._last_positions[roi.idx] = current_pos
-        return dist
-
-    def input_roi_data(self, t, roi, data):
-        """
-        Record activity data for a specific ROI at given time.
-
-        Args:
-            t (int): Time in milliseconds
-            roi: ROI object
-            data (dict): Position data for the ROI
-        """
-        tick = int(round((t / 1000.0) / self._period))
+        tick = round((t / 1000.0) / self._period)
         act = self._compute_distance_for_roi(roi, data)
         if tick not in self._activity_accum:
-            self._activity_accum[tick] = OrderedDict()
-            for r in range(1, self._n_rois + 1):
-                self._activity_accum[tick][r] = 0
-        self._activity_accum[tick][roi.idx] += act
-
-    def _make_sql_command(self, vals):
-        """
-        Create SQL INSERT command for activity data.
-
-        Args:
-            vals (dict): Activity values for each ROI
-
-        Returns:
-            str: SQL INSERT command
-        """
-        dt = datetime.datetime.fromtimestamp(int(time.time()))
-        date_time_fields = dt.strftime("%d %b %Y,%H:%M:%S").split(",")
-        values = date_time_fields
-        for i in range(1, self._n_rois + 1):
-            values.append(int(round(self._scale * vals[i])))
-        command = (
-            """INSERT INTO CSV_DAM_ACTIVITY (date, time, """
-            + ", ".join([f"ROI_{i}" for i in range(1, self._n_rois + 1)])
-            + f""") VALUES {str(tuple(values))}"""
+            self._activity_accum[tick] = OrderedDict(
+                (r, 0) for r in range(1, self._n_rois + 1)
+            )
+        # defaultdict-like accumulation
+        self._activity_accum[tick][roi.idx] = (
+            self._activity_accum[tick].get(roi.idx, 0) + act
         )
-        return command
 
-    def flush(self, t):
-        """
-        Generate SQL commands for all accumulated activity data.
+    def flush(self, t: int) -> list[str]:
+        """Generate parameterized INSERT commands for accumulated ticks.
 
         Args:
-            t (int): Current time in milliseconds
+            t: Current time in milliseconds.
 
         Returns:
-            list: SQL INSERT commands for accumulated data
+            List of ``INSERT`` statements (one per complete tick) or ``[]``
+            if no data was accumulated.
         """
-        out = OrderedDict()
-        tick = int(round((t / 1000.0) / self._period))
-        if len(self._activity_accum) < 1:
-            self._activity_accum[tick] = OrderedDict()
-            for r in range(1, self._n_rois + 1):
-                self._activity_accum[tick][r] = 0
+        tick = round((t / 1000.0) / self._period)
+        if not self._activity_accum:
+            self._activity_accum[tick] = OrderedDict(
+                (r, 0) for r in range(1, self._n_rois + 1)
+            )
             return []
 
-        m = min(self._activity_accum.keys())
-        todel = []
-        for i in range(m, tick):
-            if i not in list(self._activity_accum.keys()):
-                self._activity_accum[i] = OrderedDict()
-                for r in range(1, self._n_rois + 1):
-                    self._activity_accum[i][r] = 0
-            out[i] = self._activity_accum[i].copy()
-            todel.append(i)
-            for r in range(1, self._n_rois + 1):
-                out[i][r] = round(out[i][r], 5)
+        min_tick = min(self._activity_accum.keys())
+        out: OrderedDict[int, dict[int, float]] = OrderedDict()
+        to_delete: list[int] = []
 
-        for i in todel:
+        for i in range(min_tick, tick):
+            if i not in self._activity_accum:
+                self._activity_accum[i] = OrderedDict(
+                    (r, 0) for r in range(1, self._n_rois + 1)
+                )
+            # Copy and round in one step
+            out[i] = OrderedDict(
+                (r, round(v, 5)) for r, v in self._activity_accum[i].items()
+            )
+            to_delete.append(i)
+
+        for i in to_delete:
             del self._activity_accum[i]
 
-        if tick - m > 1:
-            logging.warning(
+        if tick - min_tick > 1:
+            _LOGGER.warning(
                 "DAM file writer skipping a tick. No data for more than one period!"
             )
-        out = [self._make_sql_command(v) for v in list(out.values())]
-        return out
+        return [self._make_sql_command(v) for v in out.values()]
+
+    # -- private helpers --------------------------------------------------
+
+    def _compute_distance_for_roi(
+        self, roi: ROIProtocol, data: Mapping[str, Any]
+    ) -> float:
+        """Return normalized distance since last call (0 on first observation)."""
+        current_pos = data["x"] + 1j * data["y"]
+        last_pos = self._last_positions[roi.idx]
+        if last_pos is None:
+            self._last_positions[roi.idx] = current_pos
+            return 0.0
+        dist = abs(current_pos - last_pos) / roi.longest_axis
+        self._last_positions[roi.idx] = current_pos
+        return float(dist)
+
+    def _make_sql_command(self, vals: Mapping[int, float]) -> str:
+        """Build ``INSERT INTO CSV_DAM_ACTIVITY`` for a single tick.
+
+        Values are inlined as scaled integers - this table is append-only and
+        the values are already sanitized integers.  Parameterized form is not
+        required for the test harness but could be added if needed.
+        """
+        dt = datetime.datetime.fromtimestamp(int(time.time()), tz=datetime.UTC)
+        date_str, time_str = dt.strftime("%d %b %Y,%H:%M:%S").split(",")
+        # Preserve order ROI_1..ROI_n
+        scaled = [str(round(self._scale * vals[i])) for i in range(1, self._n_rois + 1)]
+        values = [f"'{date_str}'", f"'{time_str}'", *scaled]
+        # Build column list once
+        cols = ", ".join(f"ROI_{i}" for i in range(1, self._n_rois + 1))
+        vals_joined = ", ".join(values)
+        return (
+            f"INSERT INTO CSV_DAM_ACTIVITY (date, time, {cols}) VALUES ({vals_joined})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Null sentinel
+# ---------------------------------------------------------------------------
 
 
 class Null:
-    """
-    Special NULL representation for SQLite compatibility.
+    """Sentinel representing SQL ``NULL`` for SQLite auto-increment columns."""
 
-    SQLite requires NULL for auto-increment fields instead of 0.
-    """
-
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "NULL"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "NULL"
 
 
-# =============================================================================================================#
-# VARIOUS OTHER CLASSES
-#
-# =============================================================================================================#
+# ---------------------------------------------------------------------------
+# Npy appendable file
+# ---------------------------------------------------------------------------
 
 
 class NpyAppendableFile:
+    """Appendable ``.anpy`` file - efficient incremental ``.npy`` storage.
+
+    The format stores multiple ``np.save`` blocks concatenated.  Reading via
+    :meth:`load` concatenates them lazily along ``axis``.
+
+    Args:
+        fname: Base filename; extension is forced to ``.anpy``.
+        newfile: If ``True``, the first :meth:`write` truncates the file.
     """
-    Custom file format for efficiently appending numpy arrays.
 
-    Creates .anpy files that can be incrementally written to without loading
-    the entire file into memory. Can be converted to standard .npy format.
-    """
+    def __init__(self, fname: str | Path, newfile: bool = True) -> None:
+        path = Path(fname)
+        self.fname: str = str(path.with_suffix(".anpy"))
+        self._newfile: bool = newfile
+        self._first_write: bool = True
 
-    def __init__(self, fname, newfile=True):
-        """
-        Initialize appendable numpy file.
-
-        Args:
-            fname (str): Base filename (extension will be changed to .anpy)
-            newfile (bool): Whether to create new file or append to existing
-        """
-        filepath, extension = os.path.splitext(fname)
-        self.fname = filepath + ".anpy"
-
-        self._newfile = newfile
-        self._first_write = True
-
-    def write(self, data):
-        """
-        Append array to file.
-
-        Args:
-            data (np.ndarray): Array to append
+    def write(self, data: npt.NDArray[Any]) -> bool:
+        """Append ``data`` to the file.
 
         Returns:
-            bool: True if write successful
+            ``True`` on success.
         """
+        mode = "wb" if (self._newfile and self._first_write) else "ab"
+        with Path(self.fname).open(mode) as fh:
+            np.save(fh, data)
         if self._newfile and self._first_write:
-            with open(self.fname, "wb") as fh:
-                np.save(fh, data)
             self._first_write = False
-            return True
+        return True
 
-        else:
-            with open(self.fname, "ab") as fh:
-                np.save(fh, data)
-
-            return True
-
-        return False
-
-    def load(self, axis=2):
-        """
-        Load entire file contents.
+    def load(self, axis: int = 2) -> npt.NDArray[Any]:
+        """Load and concatenate all blocks.
 
         Args:
-            axis (int): Axis along which to concatenate arrays
+            axis: Axis along which to concatenate.
 
         Returns:
-            np.ndarray: Concatenated array data
+            Concatenated array.
         """
-        with open(self.fname, "rb") as fh:
-            fsz = os.fstat(fh.fileno()).st_size
+        path = Path(self.fname)
+        with path.open("rb") as fh:
+            fsz = path.stat().st_size
             out = np.load(fh)
             while fh.tell() < fsz:
                 out = np.concatenate((out, np.load(fh)), axis=axis)
-
         return out
 
-    def convert(self, filename=None):
-        """
-        Convert .anpy file to standard .npy format.
+    def convert(self, filename: str | Path | None = None) -> None:
+        """Convert ``.anpy`` to a standard ``.npy`` file.
 
         Args:
-            filename (str): Output filename (default: same name with .npy)
+            filename: Output path; defaults to ``<basename>.npy``.
         """
         content = self.load()
-
         if filename is None:
-            filepath, _ = os.path.splitext(self.fname)
-            filename = filepath + ".npy"
-
-        with open(filename, "wb") as fh:
+            filename = str(Path(self.fname).with_suffix(".npy"))
+        with Path(filename).open("wb") as fh:
             np.save(fh, content)
-
         print(
-            f"New .npy compatible file saved with name {filename}. Use numpy.load to load data from it. The array has a shape of {content.shape}"
+            f"New .npy compatible file saved with name {filename}. "
+            f"Use numpy.load to load data from it. "
+            f"The array has a shape of {content.shape}"
         )
 
     @property
-    def _dtype(self):
-        """Get data type of stored arrays."""
-        return self.load().dtype
+    def _dtype(self) -> np.dtype[Any]:
+        """Dtype of stored arrays - reads header only (no full load)."""
+        # Header-only path is cheaper than full concatenation
+        _, header = self.header
+        descr: Any = header.get("descr")
+        # descr may be a string like '<f8' or a dtype; normalise
+        return np.dtype(descr) if isinstance(descr, str) else descr
 
     @property
-    def _actual_shape(self):
-        """Get shape of complete concatenated data."""
+    def _actual_shape(self) -> tuple[int, ...]:
+        """Shape of the fully concatenated array."""
         return self.load().shape
 
     @property
-    def header(self):
-        """
-        Read numpy file header information.
-
-        Returns:
-            tuple: (version, header_dict) with file format information
-        """
-        with open(self.fname, "rb") as fh:
+    def header(self) -> tuple[tuple[int, int], dict[str, Any]]:
+        """Read numpy file header (version, dict)."""
+        with Path(self.fname).open("rb") as fh:
             version = np.lib.format.read_magic(fh)
-            # Use version-specific public API instead of private _read_array_header
-            if version[0] == 1:
-                shape, fortran, dtype = np.lib.format.read_array_header_1_0(fh)
-            elif version[0] == 2:
-                shape, fortran, dtype = np.lib.format.read_array_header_2_0(fh)
-            else:
-                shape, fortran, dtype = np.lib.format.read_array_header_2_0(fh)
-
+            match version[0]:
+                case 1:
+                    shape, fortran, dtype = np.lib.format.read_array_header_1_0(fh)
+                case 2:
+                    shape, fortran, dtype = np.lib.format.read_array_header_2_0(fh)
+                case _:
+                    shape, fortran, dtype = np.lib.format.read_array_header_2_0(fh)
         return version, {"descr": dtype, "fortran_order": fortran, "shape": shape}
 
 
+# ---------------------------------------------------------------------------
+# Raw data writer
+# ---------------------------------------------------------------------------
+
+
 class RawDataWriter:
+    """Save raw tracking data as appendable ``.anpy`` files per ROI.
+
+    Args:
+        basename: Base filename for output files.
+        n_rois: Number of ROIs.
+        entities: Max entities per ROI.
     """
-    Writer for saving raw tracking data for offline analysis.
 
-    Saves tracking data as appendable numpy arrays (.anpy files) that can be
-    efficiently written during experiments and later converted to standard
-    numpy format for analysis.
-    """
-
-    def __init__(self, basename, n_rois, entities=40):
-        """
-        Initialize raw data writer.
-
-        Args:
-            basename (str): Base filename for output files
-            n_rois (int): Number of ROIs to track
-            entities (int): Maximum number of entities per ROI (default: 40)
-        """
-        self._basename, _ = os.path.splitext(basename)
-
-        self.entities = entities
-        self.files = [
-            NpyAppendableFile(
-                os.path.join(f"{self._basename}_{n_rois:03d}.anpy"),
-                newfile=True,
-            )
-            for r in range(n_rois)
+    def __init__(self, basename: str | Path, n_rois: int, entities: int = 40) -> None:
+        base = Path(str(basename)).with_suffix("")
+        self._basename: str = str(base)
+        self.entities: int = entities
+        self.files: list[NpyAppendableFile] = [
+            NpyAppendableFile(Path(f"{self._basename}_{n_rois:03d}.anpy"), newfile=True)
+            for _ in range(n_rois)
         ]
+        self.data: dict[int, npt.NDArray[Any]] = {}
 
-        self.data = {}
+    def flush(self, t: int, frame: Any) -> None:
+        """Write accumulated per-ROI arrays to disk."""
+        for row_key, fh in zip(self.data, self.files, strict=False):
+            fh.write(self.data[row_key])
 
-    def flush(self, t, frame):
+    def write(
+        self, t: int, roi: ROIProtocol, data_rows: Sequence[Mapping[str, Any]]
+    ) -> None:
+        """Buffer tracking data for ``roi`` at time ``t``.
+
+        Each ``data_rows`` element is a mapping with ``x, y, w, h, phi``.
+        The resulting array is fixed to ``(entities, 6, 1)``.
         """
-        Write accumulated data to files.
-
-        Args:
-            t (int): Current time (unused)
-            frame: Current frame (unused)
-        """
-        for row, fh in zip(self.data, self.files, strict=False):
-            fh.write(self.data[row])
-
-    def write(self, t, roi, data_rows):
-        """
-        Store tracking data for a ROI.
-
-        Args:
-            t (int): Time in milliseconds
-            roi: ROI object with idx property
-            data_rows (list): List of DataPoint objects with tracking info
-                Each DataPoint contains: x, y, w, h, phi, is_inferred, has_interacted
-        """
-        # Convert data_rows to an array with shape (nf, 5) where nf is the number of flies in the ROI
         arr = np.asarray(
             [
                 [t, fly["x"], fly["y"], fly["w"], fly["h"], fly["phi"]]
                 for fly in data_rows
             ]
         )
-        # The size of data_rows depends on how many contours were found. The array needs to have a fixed shape so we round it to self.entities as the max number of flies allowed
+        # Resize to fixed entity count - pad/truncate as needed
         arr.resize((self.entities, 6, 1), refcheck=False)
         self.data[roi.idx] = arr

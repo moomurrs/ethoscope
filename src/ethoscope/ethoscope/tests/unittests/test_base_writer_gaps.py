@@ -410,13 +410,24 @@ class TestDbAppenderGaps:
         db_file.write_bytes(b"x")
 
         appender = object.__new__(dbAppender)
-        with patch(
-            "ethoscope.io.base.os.path.exists",
-            side_effect=lambda p: p in {str(db_file), "/ethoscope_data/results"},
-        ):
+        # New implementation uses pathlib.Path, so patch Path methods
+        # Keep backward compat for os.path.exists mock as well
+        def fake_exists(self: object) -> bool:  # type: ignore[no-untyped-def]
+            # self is a Path instance
+            s = str(self)  # type: ignore[arg-type]
+            if s == "exp.db":
+                return False
+            if s in {str(db_file), "/ethoscope_data/results", str(sub)}:
+                return True
+            # For other paths, use real exists
+            import pathlib
+
+            return pathlib.Path(s).exists() if s != "exp.db" else False
+
+        with patch("ethoscope.io.base.Path.exists", fake_exists):
             with patch(
-                "ethoscope.io.base.os.walk",
-                return_value=[(str(sub), [], ["exp.db"])],
+                "ethoscope.io.base.Path.rglob",
+                return_value=[db_file],
             ):
                 result = appender._find_sqlite_database_path("exp.db")
         assert result == str(db_file)

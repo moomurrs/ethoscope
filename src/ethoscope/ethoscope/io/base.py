@@ -1,460 +1,553 @@
-"""
-Database Writers for Ethoscope Experiment Data Storage
+"""Database Writers for Ethoscope Experiment Data Storage.
 
 This module provides various classes for storing experimental tracking data
 from the Ethoscope behavioral monitoring system. Uses SQLite as the sole
 database backend.
 
-Class Hierarchy and Relationships:
-==================================
+Architecture:
+    - :class:`BaseAsyncSQLWriter` - template for async DB writers
+    - :class:`BaseResultWriter` - coordinator for tracking data persistence
+    - :class:`dbAppender` - append to existing database
+    - Helpers are injected via composition (see :mod:`ethoscope.io.helpers`).
 
-1. Database Writers (Main Interface):
-   BaseResultWriter (abstract base)
-   ├── SQLiteResultWriter (SQLite-specific implementation)
-   └── RawDataWriter (independent class for numpy array storage)
-
-2. Async Database Processes (Multiprocessing):
-   multiprocessing.Process
-   └── AsyncSQLiteWriter (handles SQLite writes in separate process)
-
-3. Helper Classes (Data Formatting):
-   SensorDataHelper (formats sensor data for database storage)
-   ImgSnapshotHelper (handles image snapshot storage as BLOBs)
-   DAMFileHelper (creates DAM-compatible activity summaries)
-
-4. Utility Classes:
-   Null (special NULL representation for SQLite)
-   NpyAppendableFile (custom numpy array file format for incremental writes)
-
-Interaction Flow:
-================
-1. SQLiteResultWriter creates an async writer process (AsyncSQLiteWriter)
-2. SQLiteResultWriter sends SQL commands via multiprocessing queue to async writer
-3. SQLiteResultWriter uses helper classes to format different data types:
-   - DAMFileHelper for activity summaries
-   - ImgSnapshotHelper for periodic screenshots
-   - SensorDataHelper for environmental sensor data
-4. RawDataWriter operates independently, saving raw data directly to numpy array files
-
-Key Design Patterns:
-===================
-- Multiprocessing: Async writers run in separate processes to prevent I/O blocking
-- Producer-Consumer: Main thread produces SQL commands, async writer consumes them
-- Template Method: BaseResultWriter provides base implementation, SQLiteResultWriter overrides specific methods
-- Helper Pattern: Separate classes handle formatting for different data types
-- Context Manager: BaseResultWriter implements __enter__/__exit__ for proper cleanup
+Design patterns:
+    - Producer-Consumer via :class:`multiprocessing.JoinableQueue`
+    - Template Method for DB-specific writers
+    - Composition over inheritance for helpers
 """
 
+from __future__ import annotations
+
+import contextlib
 import json
 import logging
 import multiprocessing
 import os
+import queue as queue_mod
+import re
 import time
-import traceback
+import weakref
 from collections import deque
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Self, cast
 
-# Import helper classes
+from ._constants import (
+    ASYNC_WRITER_TIMEOUT,
+    BUFFERED_COMMAND_MAX_AGE,
+    MAX_BUFFERED_COMMANDS,
+    MAX_BUFFERED_RETRY_FAILURES,
+    MAX_DB_RETRIES,
+    MAX_RETRY_DELAY,
+    METADATA_MAX_VALUE_LENGTH,
+    MIN_DB_SIZE_BYTES,
+    QUEUE_CHECK_INTERVAL,
+    RESTART_THROTTLE_SECONDS,
+    RETRY_BASE_DELAY,
+)
 from .helpers import DAMFileHelper, ImgSnapshotHelper, SensorDataHelper
 
-# Constants
-ASYNC_WRITER_TIMEOUT = 30  # Timeout in seconds for async writer initialization
-SENSOR_DEFAULT_PERIOD = 120.0  # Default sensor sampling period in seconds
-IMG_SNAPSHOT_DEFAULT_PERIOD = (
-    300.0  # Default image snapshot period in seconds (5 minutes)
-)
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+    from multiprocessing import JoinableQueue
+    from multiprocessing.synchronize import Event as MpEvent
 
-# Database resilience constants
-MAX_DB_RETRIES = 3  # Maximum number of retry attempts for database operations
-RETRY_BASE_DELAY = 1.0  # Base delay in seconds for exponential backoff
-MAX_RETRY_DELAY = 30.0  # Maximum delay between retries
-MAX_BUFFERED_COMMANDS = 10000  # Maximum commands to buffer in memory during failures
-DAM_DEFAULT_PERIOD = 60.0  # Default DAM activity sampling period in seconds
-METADATA_MAX_VALUE_LENGTH = (
-    60000  # Maximum length for metadata values before truncation
-)
-QUEUE_CHECK_INTERVAL = 0.1  # Interval for checking queue status in seconds
+    from ethoscope.core.roi import ROI
+
+    from ._types import DataPointProtocol, DbCredentials, MetadataDict, SqlArgs
+
+_LOGGER: Final = logging.getLogger(__name__)
+
+
+def _finalize_queue(qref: weakref.ref[JoinableQueue[Any]]) -> None:
+    """Close a queue via weakref so finalize does not pin it alive."""
+    q = qref()
+    if q is not None:
+        with contextlib.suppress(Exception):
+            q.cancel_join_thread()
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class WriterNotReadyError(RuntimeError):
+    """Raised when the async writer fails to become ready in time."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"Async database writer failed to initialize within "
+            f"{int(ASYNC_WRITER_TIMEOUT)} seconds - check database connection"
+        )
+
+
+class WriterInitError(RuntimeError):
+    """Raised when the async writer process dies during init."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Async database writer process died during initialization - "
+            "check database configuration and logs"
+        )
+
+
+class MissingDatabaseNameError(ValueError):
+    """Raised when database_to_append is not provided."""
+
+    def __init__(self) -> None:
+        super().__init__("database_to_append parameter is required")
+
+
+class DatabaseFileNotFoundError(FileNotFoundError):
+    """Raised when SQLite database file cannot be found."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"SQLite database not found: {path}")
+        self.path = path
+
+
+# ---------------------------------------------------------------------------
+# Base async writer - template method with SRP decomposition
+# ---------------------------------------------------------------------------
 
 
 class BaseAsyncSQLWriter(multiprocessing.Process):
-    """
-    Abstract base class for asynchronous SQL database writers.
+    """Abstract async SQL writer running in a separate process.
 
-    This class provides a template method pattern for SQL database writers that run
-    in separate processes. It handles the common functionality of queue processing,
-    event signaling, error handling, and cleanup while allowing subclasses to
-    implement database-specific connection and initialization logic.
+    Template Method: subclasses implement DB-specific hooks.
 
     Attributes:
-        _queue (multiprocessing.Queue): Queue for receiving SQL commands
-        _erase_old_db (bool): Whether to erase existing database on startup
-        _ready_event (multiprocessing.Event): Signals when writer is ready
+        _queue: Queue for SQL commands.
+        _erase_old_db: Whether to erase existing DB on startup.
+        _ready_event: Signals readiness to accept commands.
     """
-
-    def __init__(self, queue, erase_old_db=True):
-        """
-        Initialize the base async SQL writer.
-
-        Args:
-            queue (multiprocessing.Queue): Queue for receiving SQL commands
-            erase_old_db (bool): Whether to erase existing database on startup
-        """
-        self._queue = queue
-        self._erase_old_db = erase_old_db
-        self._ready_event = multiprocessing.Event()
-        super().__init__()
-
-    def run(self):
-        """
-        Template method for the main process loop.
-
-        This method implements the common pattern for all async SQL writers:
-        1. Initialize database-specific setup
-        2. Signal ready state
-        3. Process commands from queue until 'DONE'
-        4. Handle errors appropriately
-        5. Clean up resources
-        """
-        db = None
-        do_run = True
-
-        try:
-            logging.info(f"{self._get_db_type_name()} async writer starting up...")
-
-            # Database-specific initialization (implemented by subclasses)
-            self._initialize_database()
-
-            # Get database connection (implemented by subclasses)
-            db = self._get_connection()
-            logging.info(
-                f"{self._get_db_type_name()} database connection established successfully"
-            )
-
-            # Signal that the writer is ready to accept commands
-            logging.info(
-                f"{self._get_db_type_name()} async writer ready to accept commands"
-            )
-            self._ready_event.set()
-
-            # Main command processing loop
-            while do_run:
-                try:
-                    msg = self._queue.get()
-                    if msg == "DONE":
-                        do_run = False
-                        continue
-                    command, args = msg
-
-                    c = db.cursor()
-                    if args is None:
-                        c.execute(command)
-                    else:
-                        c.execute(command, args)
-                    db.commit()
-
-                except Exception as e:
-                    # Determine if this error should stop the writer
-                    if not self._should_retry_on_error(e):
-                        do_run = False
-
-                    try:
-                        logging.error(
-                            f"Failed to run {self._get_db_type_name().lower()} command:\n%s"
-                            % command
-                        )
-                        logging.error(f"Error details: {str(e)}")
-                        logging.error(
-                            f"Arguments: {str(args)}" if "args" in locals() else "None"
-                        )
-                        logging.error(f"Traceback: {traceback.format_exc()}")
-
-                        # Allow subclasses to handle specific error types
-                        self._handle_command_error(
-                            e, command, args if "args" in locals() else None
-                        )
-
-                    except Exception as log_error:
-                        logging.error(f"Failed to log error details: {str(log_error)}")
-                        logging.error(
-                            "Did not retrieve queue value or failed to log command"
-                        )
-                        do_run = False
-                finally:
-                    if self._queue.empty():
-                        # Sleep if queue is empty to avoid excessive CPU usage
-                        time.sleep(QUEUE_CHECK_INTERVAL)
-
-        except KeyboardInterrupt as e:
-            logging.warning(
-                f"{self._get_db_type_name()} async process interrupted with KeyboardInterrupt"
-            )
-            # Ensure ready event is set even if interrupted
-            self._ready_event.set()
-            raise e
-        except Exception as e:
-            logging.error(
-                f"{self._get_db_type_name()} async process stopped with an exception: %s",
-                str(e),
-            )
-            logging.error("Exception traceback: %s", traceback.format_exc())
-            # Ensure ready event is set even if there's an error during startup
-            self._ready_event.set()
-            raise e
-        finally:
-            logging.info(f"Closing async {self._get_db_type_name().lower()} writer")
-            while not self._queue.empty():
-                self._queue.get()
-            self._queue.close()
-            if db is not None:
-                db.close()
-
-    # Abstract methods that subclasses must implement
-    def _initialize_database(self):
-        """Initialize database-specific setup (create, delete, configure)."""
-        raise NotImplementedError("Subclasses must implement _initialize_database()")
-
-    def _get_connection(self):
-        """Create and return a database connection object."""
-        raise NotImplementedError("Subclasses must implement _get_connection()")
-
-    def _get_db_type_name(self):
-        """Return the database type name for logging (e.g., 'MySQL', 'SQLite')."""
-        raise NotImplementedError("Subclasses must implement _get_db_type_name()")
-
-    def _should_retry_on_error(self, error):
-        """
-        Determine whether the writer should continue after an error.
-
-        Args:
-            error (Exception): The exception that occurred
-
-        Returns:
-            bool: True if the writer should continue, False if it should stop
-        """
-        raise NotImplementedError("Subclasses must implement _should_retry_on_error()")
-
-    def _handle_command_error(self, error, command, args):
-        """
-        Handle database-specific error processing.
-
-        Args:
-            error (Exception): The exception that occurred
-            command (str): The SQL command that failed
-            args (tuple): The command arguments, if any
-        """
-        # Default implementation does nothing; subclasses can override
-        pass
-
-
-class BaseResultWriter:
-    """
-    Abstract base class for all result writers with common functionality.
-
-    This class contains all the shared logic for initializing and managing result writers,
-    including helper classes, metadata handling, and database table creation. Subclasses
-    implement database-specific async writer creation and any specialized behavior.
-
-    Attributes:
-        _max_insert_string_len (int): Maximum length for batched INSERT commands
-        _async_writing_class: Class to use for async database writes (set by subclasses)
-        _null: Value to use for NULL in database (set by subclasses)
-    """
-
-    # Subclasses must define these class attributes
-    _async_writing_class = None
-    _null = None
-    _max_insert_string_len = 1000
 
     def __init__(
         self,
-        db_credentials,
-        rois,
-        metadata=None,
-        make_dam_like_table=True,
-        take_frame_shots=False,
-        erase_old_db=True,
-        sensor=None,
-        **kwargs,
-    ):
-        """
-        Initialize the base result writer with common functionality.
+        queue: JoinableQueue[Any],
+        erase_old_db: bool = True,
+    ) -> None:
+        self._queue: JoinableQueue[Any] = queue
+        self._erase_old_db: bool = erase_old_db
+        self._ready_event: MpEvent = multiprocessing.Event()
+        super().__init__()
 
-        Args:
-            db_credentials (dict): Database connection credentials
-            rois (list): List of ROI objects to track
-            metadata (dict): Experimental metadata to store
-            make_dam_like_table (bool): Whether to create DAM-compatible activity table
-            take_frame_shots (bool): Whether to periodically save image snapshots
-            erase_old_db (bool): Whether to drop and recreate database
-            sensor: Optional sensor object for environmental data collection
-            **kwargs: Additional arguments passed to subclasses
-        """
-        # Create async writer using subclass-specific method
-        self._queue = multiprocessing.JoinableQueue()
-        self._async_writer = self._create_async_writer(
+    # -- template ---------------------------------------------------------
+
+    def run(self) -> None:
+        """Main process loop - init DB, signal ready, process queue."""
+        db: Any = None
+
+        try:
+            _LOGGER.info("%s async writer starting up...", self._get_db_type_name())
+            self._initialize_database()
+            db = self._get_connection()
+            _LOGGER.info(
+                "%s database connection established successfully",
+                self._get_db_type_name(),
+            )
+            _LOGGER.info(
+                "%s async writer ready to accept commands", self._get_db_type_name()
+            )
+            self._ready_event.set()
+            self._run_command_loop(db)
+
+        except KeyboardInterrupt:
+            _LOGGER.warning(
+                "%s async process interrupted with KeyboardInterrupt",
+                self._get_db_type_name(),
+            )
+            self._ready_event.set()
+            raise
+        except Exception:  # process boundary: must set ready event on fatal init errors
+            _LOGGER.exception(
+                "%s async process stopped with an exception",
+                self._get_db_type_name(),
+            )
+            self._ready_event.set()
+            raise
+        finally:
+            _LOGGER.info("Closing async %s writer", self._get_db_type_name().lower())
+            self._drain_queue()
+            if db is not None:
+                with contextlib.suppress(Exception):
+                    db.close()
+
+    def _run_command_loop(self, db: Any) -> None:
+        """Consume queue messages until the DONE sentinel arrives."""
+        do_run = True
+        while do_run:
+            command: str | None = None
+            args: SqlArgs = None
+            try:
+                msg = self._queue.get()
+                if msg == "DONE":
+                    do_run = False
+                    continue
+                command, args = cast("tuple[str, SqlArgs]", msg)
+                if command is not None:
+                    do_run = self._execute_command(db, command, args)
+            except Exception as exc:  # noqa: BLE001  # process boundary: survive malformed commands
+                do_run = self._handle_loop_error(exc, command, args)
+            finally:
+                if self._queue.empty():
+                    time.sleep(QUEUE_CHECK_INTERVAL)
+
+    # -- helpers to keep run() small ------------------------------------
+
+    def _execute_command(self, db: Any, command: str, args: SqlArgs) -> bool:
+        """Execute a single SQL command; return whether to continue."""
+        cursor = db.cursor()
+        if args is None:
+            cursor.execute(command)
+        else:
+            cursor.execute(command, args)
+        db.commit()
+        return True
+
+    def _handle_loop_error(
+        self, exc: Exception, command: str | None, args: SqlArgs
+    ) -> bool:
+        """Log the error and decide whether the loop should continue."""
+        should_continue = self._should_retry_on_error(exc)
+        try:
+            _LOGGER.exception(
+                "Failed to run %s command: %s",
+                self._get_db_type_name().lower(),
+                command,
+            )
+            _LOGGER.error("Error details: %s", exc)
+            _LOGGER.error("Arguments: %s", args)
+            self._handle_command_error(exc, command, args)
+        except Exception:
+            _LOGGER.exception("Failed to log error details")
+            _LOGGER.exception("Did not retrieve queue value or failed to log command")
+            return False
+        return should_continue
+
+    def _drain_queue(self) -> None:
+        """Empty and close the queue."""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue_mod.Empty:
+                break
+        try:
+            self._queue.close()
+        except Exception:
+            _LOGGER.debug("Failed to close queue", exc_info=True)
+
+    # -- abstract hooks ---------------------------------------------------
+
+    def _initialize_database(self) -> None:
+        """Initialize DB-specific setup."""
+        raise NotImplementedError
+
+    def _get_connection(self) -> Any:
+        """Create and return a DB connection."""
+        raise NotImplementedError
+
+    def _get_db_type_name(self) -> str:
+        """Return DB type name for logging."""
+        raise NotImplementedError
+
+    def _should_retry_on_error(self, error: Exception) -> bool:
+        """Whether to continue after ``error``."""
+        raise NotImplementedError
+
+    def _handle_command_error(
+        self, error: Exception, command: str | None, args: SqlArgs
+    ) -> None:
+        """Handle DB-specific error processing."""
+        # Default no-op; subclasses may override
+        _ = (error, command, args)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for BaseResultWriter - SRP via composition
+# ---------------------------------------------------------------------------
+
+
+class _BufferedCommandQueue:
+    """Resilience buffer for failed commands - composition over inline code."""
+
+    def __init__(self, maxlen: int = MAX_BUFFERED_COMMANDS) -> None:
+        self._buffer: deque[tuple[str, SqlArgs, float]] = deque(maxlen=maxlen)
+        self._maxlen: int = maxlen
+
+    def append(self, command: str, args: SqlArgs) -> bool:
+        """Buffer a command; always returns False (buffered, not sent)."""
+        try:
+            self._buffer.append((command, args, time.time()))
+        except Exception:  # buffering must never break the writer
+            _LOGGER.exception("Failed to buffer command")
+            return False
+        if len(self._buffer) >= self._maxlen:
+            _LOGGER.warning(
+                "Command buffer full (%s commands), oldest will be dropped",
+                self._maxlen,
+            )
+        return False
+
+    def popleft(self) -> tuple[str, SqlArgs, float] | None:
+        """Pop oldest or None if empty."""
+        try:
+            return self._buffer.popleft()
+        except IndexError:
+            return None
+
+    def appendleft(self, item: tuple[str, SqlArgs, float]) -> None:
+        """Push back to front."""
+        self._buffer.appendleft(item)
+
+    def as_deque(self) -> deque[tuple[str, SqlArgs, float]]:
+        """Direct deque view (test/compat surface)."""
+        return self._buffer
+
+    def replace_deque(self, value: deque[tuple[str, SqlArgs, float]]) -> None:
+        """Swap the underlying deque (test/compat surface)."""
+        self._buffer = value
+
+    def __len__(self) -> int:
+        return len(self._buffer)
+
+    def __bool__(self) -> bool:
+        return bool(self._buffer)
+
+    def clear(self) -> None:
+        """Clear buffer."""
+        self._buffer.clear()
+
+
+class _DiagnosticsReporter:
+    """I/O diagnostics - separate concern from writer logic."""
+
+    @staticmethod
+    def log(
+        db_credentials: DbCredentials,
+        queue: JoinableQueue[Any],
+        status: dict[str, Any],
+        context: str = "",
+    ) -> None:
+        """Emit diagnostics to logger."""
+        try:
+            db_path = db_credentials.get("name", "unknown")
+            _LOGGER.error("Database I/O Issue - %s", context)
+            _LOGGER.error("  Database path: %s", db_path)
+            _LOGGER.error("  Writer alive: %s", status.get("writer_alive"))
+            _LOGGER.error("  Buffered commands: %s", status.get("buffered_commands"))
+            _LOGGER.error("  Writer restarts: %s", status.get("restart_count"))
+            since = status.get("time_since_last_restart")
+            if since is not None:
+                _LOGGER.error("  Time since last restart: %.1fs", since)
+            else:
+                _LOGGER.error("  Never restarted")
+
+            # Disk space
+            if db_path != "unknown":
+                try:
+                    parent = Path(db_path).parent
+                    if parent.exists() and hasattr(parent, "stat"):
+                        parent.stat()
+                        if hasattr(os, "statvfs"):
+                            vfs = os.statvfs(parent)
+                            free = vfs.f_frsize * vfs.f_bavail
+                            total = vfs.f_frsize * vfs.f_blocks
+                            _LOGGER.error(
+                                "  Disk space: %.2fGB free (%.1f%% of %.2fGB)",
+                                free / (1024**3),
+                                (free / total * 100) if total else 0,
+                                total / (1024**3),
+                            )
+                except Exception:
+                    _LOGGER.exception("  Could not check disk space")
+
+            try:
+                _LOGGER.error("  Queue size: %s", queue.qsize())
+            except Exception:
+                _LOGGER.exception("  Could not check queue size")
+        except Exception:
+            _LOGGER.exception("Failed to log I/O diagnostics")
+
+
+# ---------------------------------------------------------------------------
+# Base result writer - coordinator (SRP: delegates to helpers)
+# ---------------------------------------------------------------------------
+
+
+class BaseResultWriter:
+    """Abstract base for result writers - coordinator with injected helpers.
+
+    Each public method does one thing and delegates resilience/queue logic to
+    composed objects.
+    """
+
+    _null: ClassVar[Any] = None
+    _max_insert_string_len: ClassVar[int] = 1000
+
+    def __init__(  # noqa: PLR0913,PLR0917
+        self,
+        db_credentials: DbCredentials,
+        rois: Sequence[ROI],
+        metadata: MetadataDict | None = None,
+        make_dam_like_table: bool = True,
+        take_frame_shots: bool = False,
+        erase_old_db: bool = True,
+        sensor: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._queue: JoinableQueue[Any] = multiprocessing.JoinableQueue()
+        self._async_writer: BaseAsyncSQLWriter = self._create_async_writer(
             db_credentials, erase_old_db, **kwargs
         )
         self._async_writer.start()
 
-        # Initialize common attributes
-        self._erase_old_db = erase_old_db
-        self._last_t, self._last_flush_t, self._last_dam_t = [0] * 3
-        self._metadata = metadata
-        self._rois = rois
-        self._db_credentials = db_credentials
-        self._make_dam_like_table = make_dam_like_table
-        self._take_frame_shots = take_frame_shots
+        self._erase_old_db: bool = erase_old_db
+        self._last_t: int = 0
+        self._last_flush_t: int = 0
+        self._last_dam_t: int = 0
+        self._metadata: MetadataDict = metadata or {}
+        self._rois: Sequence[ROI] = rois
+        self._db_credentials: DbCredentials = db_credentials
+        self._make_dam_like_table: bool = make_dam_like_table
+        self._take_frame_shots: bool = take_frame_shots
 
-        # Initialize resilience features
-        self._failed_commands_buffer = deque(maxlen=MAX_BUFFERED_COMMANDS)
-        self._writer_restart_count = 0
-        self._last_restart_time = 0
+        self._buffer = _BufferedCommandQueue()
+        self._writer_restart_count: int = 0
+        self._last_restart_time: float = 0.0
 
-        # Initialize helper classes
-        if make_dam_like_table:
-            self._dam_file_helper = DAMFileHelper(n_rois=len(rois))
+        self._init_helpers(sensor)
+        self._var_map_initialised: bool = False
+        self._initialized_rois: set[int] = set()
+        self._insert_dict: dict[int, Any] = {}
+        # Weakref-based so the queue is not pinned for process lifetime
+        self._finalizer = weakref.finalize(
+            self, _finalize_queue, weakref.ref(self._queue)
+        )
+
+        self._wait_for_writer_ready()
+        _LOGGER.warning("Creating database tables...")
+        self._create_all_tables()
+        _LOGGER.info("Result writer initialised")
+
+    # -- helper init (SRP) ----------------------------------------------
+
+    def _init_helpers(self, sensor: Any | None) -> None:
+        """Initialize DAM / snapshot / sensor helpers via composition."""
+        if self._make_dam_like_table:
+            self._dam_file_helper: DAMFileHelper | None = DAMFileHelper(
+                n_rois=len(self._rois)
+            )
         else:
             self._dam_file_helper = None
-        if take_frame_shots:
-            self._shot_saver = ImgSnapshotHelper(database_type=self._database_type)
+
+        if self._take_frame_shots:
+            # database_type kept for compat - always SQLite3 now
+            db_type = getattr(self, "_database_type", "SQLite3")
+            self._shot_saver: ImgSnapshotHelper | None = ImgSnapshotHelper(
+                database_type=db_type
+            )
         else:
             self._shot_saver = None
-        self._insert_dict = {}
-        if self._metadata is None:
-            self._metadata = {}
+
         if sensor is not None:
-            self._sensor_saver = SensorDataHelper(
-                sensor, database_type=self._database_type
+            db_type = getattr(self, "_database_type", "SQLite3")
+            self._sensor_saver: SensorDataHelper | None = SensorDataHelper(
+                sensor, database_type=db_type
             )
-            logging.info("Creating connection to a sensor to store its data in the db")
+            _LOGGER.info("Creating connection to a sensor to store its data in the db")
         else:
             self._sensor_saver = None
 
-        self._var_map_initialised = False
-
-        # Database initialization - wait for async writer to be ready first
-        #        if (self._database_type == "MySQL" and erase_old_db) or self._database_type == "SQLite3":
-        logging.warning("Waiting for async writer to initialize database...")
-        # Wait for async writer to complete database initialization
+    def _wait_for_writer_ready(self) -> None:
+        """Block until async writer signals readiness."""
+        _LOGGER.warning("Waiting for async writer to initialize database...")
         if not self._async_writer._ready_event.wait(timeout=ASYNC_WRITER_TIMEOUT):
             if self._async_writer.is_alive():
-                raise Exception(
-                    f"Async database writer failed to initialize within {ASYNC_WRITER_TIMEOUT} seconds - check database connection"
-                )
-            else:
-                raise Exception(
-                    "Async database writer process died during initialization - check database configuration and logs"
-                )
+                raise WriterNotReadyError()
+            raise WriterInitError()
 
-        logging.warning("Creating database tables...")
+    # -- abstract factory ------------------------------------------------
 
-        # This will check if tables need to be created or not based on erase_old_db
-        self._create_all_tables()
+    def _create_async_writer(
+        self, db_credentials: DbCredentials, erase_old_db: bool, **kwargs: Any
+    ) -> BaseAsyncSQLWriter:
+        """Create DB-specific async writer - subclasses override."""
+        raise NotImplementedError
 
-        #        elif self._database_type == "MySQL" and not erase_old_db:
-        #            event = "crash_recovery"
-        #            command = "INSERT INTO START_EVENTS VALUES (%s, %s, %s)"
-        #            self._write_async_command(command, (self._null, int(time.time()), event))
+    def _create_all_tables(self) -> None:
+        """Create all required tables - subclasses should implement."""
+        raise NotImplementedError
 
-        logging.info("Result writer initialised")
+    # -- public API -------------------------------------------------------
 
-    def _create_async_writer(self, db_credentials, erase_old_db, **kwargs):
-        """
-        Create database-specific async writer.
-
-        This abstract method must be implemented by subclasses to create
-        the appropriate async writer for their database type.
-
-        Args:
-            db_credentials (dict): Database connection credentials
-            erase_old_db (bool): Whether to erase existing database
-            **kwargs: Additional database-specific arguments
-
-        Returns:
-            BaseAsyncSQLWriter: The appropriate async writer instance
-        """
-        raise NotImplementedError("Subclasses must implement _create_async_writer()")
-
-    def get_backup_filename(self):
-        """
-        Get the backup filename for this result writer.
-
-        Base implementation returns the backup filename from metadata if available.
-        Subclasses can override this method to provide writer-specific logic.
-
-        Returns:
-            str or None: Backup filename if available, None otherwise
-        """
+    def get_backup_filename(self) -> str | None:
+        """Return backup filename from metadata if present."""
         if hasattr(self, "_metadata") and self._metadata:
-            return self._metadata.get("backup_filename")
+            return self._metadata.get("backup_filename")  # type: ignore[no-any-return]
         return None
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Context manager exit - ensures proper cleanup.
-
-        Flushes remaining data, writes stop timestamp, and properly
-        shuts down the async writer process.
-        """
-        logging.info("Closing result writer...")
-        for k, v in list(self._insert_dict.items()):
-            # Check if v is a string (command) or a list (data)
-            if isinstance(v, str):
-                # Original behavior for string commands
-                self._write_async_command(v)
-                self._insert_dict[k] = ""
-            elif isinstance(v, list):
-                # For list-based data (e.g., SQLiteResultWriter), do nothing here
-                # The subclass should handle flushing lists appropriately
-                pass
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Ensure flush and clean shutdown."""
+        _LOGGER.info("Closing result writer...")
+        self._flush_insert_dict_for_close()
         try:
-            command = "INSERT INTO METADATA VALUES (?, ?)"
             self._write_async_command(
-                command, ("stop_date_time", str(int(time.time())))
+                "INSERT INTO METADATA VALUES (?, ?)",
+                ("stop_date_time", str(int(time.time()))),
             )
-            while not self._queue.empty():
-                logging.info("waiting for queue to be processed")
-                time.sleep(QUEUE_CHECK_INTERVAL)
+            self._wait_for_queue_empty()
         except Exception:
-            logging.error("Error writing metadata stop time:")
-            logging.error(traceback.format_exc())
+            _LOGGER.exception("Error writing metadata stop time")
         finally:
-            logging.info("Closing async queue")
+            self._shutdown_async_writer()
+
+    def _flush_insert_dict_for_close(self) -> None:
+        """Flush string-based insert buffers (legacy base path)."""
+        for key, value in list(self._insert_dict.items()):
+            if isinstance(value, str) and value:
+                self._write_async_command(value)
+                self._insert_dict[key] = ""
+
+    def _shutdown_async_writer(self) -> None:
+        """Send DONE and join the async process."""
+        _LOGGER.info("Closing async queue")
+        try:
             self._queue.put("DONE")
-            logging.info("Freeing queue")
+        except Exception:
+            _LOGGER.debug("Failed to put DONE", exc_info=True)
+        _LOGGER.info("Freeing queue")
+        try:
             self._queue.cancel_join_thread()
-            logging.info("Joining thread")
-            if self._async_writer.is_alive():
-                self._async_writer.join()
-                logging.info("Joined OK")
-            else:
-                logging.info("Process was not started, skipping join")
+        except Exception:
+            _LOGGER.debug("Failed to cancel join thread", exc_info=True)
+        _LOGGER.info("Joining thread")
+        if self._async_writer.is_alive():
+            self._async_writer.join()
+            _LOGGER.info("Joined OK")
+        else:
+            _LOGGER.info("Process was not started, skipping join")
+        if hasattr(self, "_finalizer"):
+            self._finalizer.detach()
 
-    def append(self):
-        """
-        Gets the last timestamp from the database to allow appending.
-        Returns:
-            int: The last timestamp in milliseconds, or 0 if not found.
-        """
-        return self.get_last_timestamp()
+    def append(self) -> int:
+        """Get last timestamp to allow appending."""
+        return self.get_last_timestamp()  # type: ignore[no-untyped-call]
 
-    def close(self):
-        """Placeholder close method."""
-        pass
+    def close(self) -> None:
+        """Placeholder - prefer context manager."""
+        # Subclasses flush remaining batch data; base does nothing
+        return
 
-    def __getstate__(self):
-        """
-        Prepare object for pickling by excluding non-serializable multiprocessing objects.
+    # -- pickle support ---------------------------------------------------
 
-        JoinableQueue and Process objects cannot be pickled, so we store the initialization
-        parameters needed to recreate them after unpickling.
-        """
+    def __getstate__(self) -> dict[str, Any]:
+        """Exclude non-serializable multiprocessing objects."""
         state = self.__dict__.copy()
-
-        # Store initialization parameters for reconstruction
         state["_pickle_init_args"] = {
             "db_credentials": self._db_credentials,
             "rois": self._rois,
@@ -462,81 +555,62 @@ class BaseResultWriter:
             "make_dam_like_table": self._make_dam_like_table,
             "take_frame_shots": self._take_frame_shots,
         }
-
-        # Remove non-serializable multiprocessing objects
         state.pop("_queue", None)
         state.pop("_async_writer", None)
-
+        state.pop("_finalizer", None)
+        # deque is picklable but we keep buffer as private composition - remove
+        state.pop("_buffer", None)
         return state
 
-    def __setstate__(self, state):
-        """
-        Restore object from pickled state by recreating multiprocessing objects.
-
-        This recreates the queue and async writer that were excluded during pickling.
-        """
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Recreate queue and writer after unpickling."""
         self.__dict__.update(state)
-
-        # Recreate multiprocessing objects using stored parameters
-        init_args = state.get("_pickle_init_args", {})
-
-        # Recreate queue and async writer
+        init_args: dict[str, Any] = state.get("_pickle_init_args", {})
         self._queue = multiprocessing.JoinableQueue()
+        self._buffer = _BufferedCommandQueue()
         self._async_writer = self._create_async_writer(
             init_args.get("db_credentials", self._db_credentials),
-            False,  # Don't erase database when restoring from pickle
+            False,
             **getattr(self, "_pickle_extra_kwargs", {}),
         )
-        # Note: async writer is not started automatically - the calling code should handle this
+        self._finalizer = weakref.finalize(
+            self, _finalize_queue, weakref.ref(self._queue)
+        )
 
     @property
-    def metadata(self):
-        """Get experimental metadata."""
+    def metadata(self) -> MetadataDict:
+        """Experimental metadata."""
         return self._metadata
 
-    def write(self, t, roi, data_rows):
-        """
-        Write tracking data for a ROI.
+    # -- tracking data paths ---------------------------------------------
 
-        Args:
-            t (int): Time in milliseconds
-            roi: ROI object
-            data_rows (list): List of tracking data points
-        """
+    def write(
+        self, t: int, roi: ROI, data_rows: Sequence[Mapping[str, DataPointProtocol]]
+    ) -> None:
+        """Write tracking data for a ROI - delegates to helpers."""
         self._last_t = t
         if not self._var_map_initialised:
             self._var_map_initialised = True
             self._initialise_var_map(data_rows[0])
 
-        # Check if this ROI's table exists, create if needed
         roi_id = roi.idx
-        if not hasattr(self, "_initialized_rois"):
-            self._initialized_rois = set()
-
         if roi_id not in self._initialized_rois:
             self._initialise_roi_table(roi, data_rows[0])
             self._initialized_rois.add(roi_id)
 
         self._add(t, roi, data_rows)
 
-    def flush(self, t, img=None):
-        """
-        Flush accumulated data to database.
+    def flush(self, t: int, img: Any | None = None) -> bool:
+        """Flush helpers and batched inserts."""
+        self._flush_helpers(t, img)
+        self._flush_batched_inserts()
+        return False
 
-        This method is called periodically to write batched SQL commands,
-        save snapshots, and collect sensor data.
-
-        Args:
-            t (int): Current time in milliseconds
-            img (np.ndarray): Optional image for snapshot
-
-        Returns:
-            bool: Always returns False
-        """
+    def _flush_helpers(self, t: int, img: Any | None) -> None:
+        """Flush DAM / snapshot / sensor helpers."""
         if self._dam_file_helper is not None:
-            out = self._dam_file_helper.flush(t)
-            for c in out:
-                self._write_async_command(c)
+            for cmd in self._dam_file_helper.flush(t):
+                self._write_async_command(cmd)
         if self._shot_saver is not None and img is not None:
             c_args = self._shot_saver.flush(t, img)
             if c_args is not None:
@@ -545,264 +619,199 @@ class BaseResultWriter:
             c_args = self._sensor_saver.flush(t)
             if c_args is not None:
                 self._write_async_command(*c_args)
-        for k, v in list(self._insert_dict.items()):
-            if len(v) > self._max_insert_string_len:
-                # Check if v is a string (command) or a list (data)
-                if isinstance(v, str):
-                    # Original behavior for string commands
-                    self._write_async_command(v)
-                    self._insert_dict[k] = ""
-                elif isinstance(v, list):
-                    # For list-based data (e.g., SQLiteResultWriter), do nothing here
-                    # The subclass should handle flushing lists appropriately
-                    pass
-        return False
 
-    def _add(self, t, roi, data_rows):
-        """
-        Add tracking data to the batch insert buffer.
+    def _flush_batched_inserts(self) -> None:
+        """Flush string-based batches that exceed threshold."""
+        for key, value in list(self._insert_dict.items()):
+            if isinstance(value, str) and len(value) > self._max_insert_string_len:
+                self._write_async_command(value)
+                self._insert_dict[key] = ""
+            # list-based (SQLite) is handled by subclass
 
-        Args:
-            t (int): Time in milliseconds
-            roi: ROI object
-            data_rows (list): Tracking data points
-        """
+    def _add(
+        self, t: int, roi: ROI, data_rows: Sequence[Mapping[str, DataPointProtocol]]
+    ) -> None:
+        """Buffer tracking rows as string INSERTs (base strategy)."""
         roi_id = roi.idx
         for dr in data_rows:
-            tp = (self._null, t) + tuple(dr.values())
+            # dr.values() are BaseIntVariable ints
+            tp = (self._null, t, *tuple(dr.values()))
             if roi_id not in self._insert_dict or self._insert_dict[roi_id] == "":
-                command = f"INSERT INTO ROI_{roi_id} VALUES {str(tp)}"
-                self._insert_dict[roi_id] = command
+                self._insert_dict[roi_id] = f"INSERT INTO ROI_{roi_id} VALUES {tp!s}"
             else:
                 self._insert_dict[roi_id] += "," + str(tp)
 
-        # now this is irrelevant when tracking multiple animals
         if self._dam_file_helper is not None:
             for dr in data_rows:
                 self._dam_file_helper.input_roi_data(t, roi, dr)
 
-    def _initialise_var_map(self, data_row):
-        """Initialize variable mapping table with data types."""
+    # -- DDL helpers ------------------------------------------------------
+
+    def _initialise_var_map(
+        self, data_row: Mapping[str, DataPointProtocol]
+    ) -> None:
+        """Create VAR_MAP entries."""
         self._write_async_command("DELETE FROM VAR_MAP")
-        for dt in list(data_row.values()):
-            command = "INSERT INTO VAR_MAP VALUES (?, ?, ?)"
+        for dt in data_row.values():
             self._write_async_command(
-                command, (dt.header_name, dt.sql_data_type, dt.functional_type)
+                "INSERT INTO VAR_MAP VALUES (?, ?, ?)",
+                (dt.header_name, dt.sql_data_type, dt.functional_type),
             )
 
-    def _initialise_roi_table(self, roi, data_row):
-        """Initialize ROI-specific database table (SQLite version)."""
+    def _initialise_roi_table(
+        self, roi: ROI, data_row: Mapping[str, DataPointProtocol]
+    ) -> None:
+        """Create ROI table - SQLite-compatible."""
         fields = ["id INTEGER PRIMARY KEY AUTOINCREMENT", "t INTEGER"]
-        for dt in list(data_row.values()):
-            fields.append(f"{dt.header_name} {dt.sql_data_type}")
-        fields = ", ".join(fields)
-        table_name = f"ROI_{roi.idx}"
-        self._create_table(table_name, fields)
+        fields.extend(
+            f"{dt.header_name} {dt.sql_data_type}" for dt in data_row.values()
+        )
+        self._create_table(f"ROI_{roi.idx}", ", ".join(fields))
 
-    def _write_async_command(self, command, args=None):
-        """
-        Send SQL command to async writer process with resilience features.
+    # -- queue / resilience -----------------------------------------------
 
-        Args:
-            command (str): SQL command to execute
-            args (tuple): Optional arguments for parameterized query
-
-        Raises:
-            Exception: If all retry attempts fail and fallback strategies are exhausted
-        """
+    def _write_async_command(self, command: str, args: SqlArgs = None) -> bool:
+        """Send command with resilience."""
         return self._write_async_command_resilient(command, args)
 
-    def _write_async_command_resilient(self, command, args=None):
-        """
-        Send SQL command with retry logic and writer recovery.
-
-        Args:
-            command (str): SQL command to execute
-            args (tuple): Optional arguments for parameterized query
-
-        Returns:
-            bool: True if command was sent successfully, False if buffered
-        """
+    def _write_async_command_resilient(
+        self, command: str, args: SqlArgs = None
+    ) -> bool:
+        """Retry loop with writer restart and buffering."""
         for attempt in range(MAX_DB_RETRIES + 1):
             try:
-                # Check if async writer is alive
                 if not self._async_writer.is_alive():
                     if attempt < MAX_DB_RETRIES:
                         self.log_io_diagnostics(
                             f"Writer died during attempt {attempt + 1}/{MAX_DB_RETRIES}"
                         )
-                        logging.warning(
-                            f"Async writer died, attempting restart (attempt {attempt + 1}/{MAX_DB_RETRIES})"
+                        _LOGGER.warning(
+                            "Async writer died, attempting restart (attempt %s/%s)",
+                            attempt + 1,
+                            MAX_DB_RETRIES,
                         )
                         if self._restart_async_writer():
-                            # Writer restarted successfully, retry buffered commands first
                             self._retry_buffered_commands()
                         continue
-                    else:
-                        # Final attempt failed, buffer the command
-                        self.log_io_diagnostics(
-                            "Writer permanently failed, entering degraded mode"
-                        )
-                        logging.error(
-                            "Async writer permanently failed, buffering command"
-                        )
-                        return self._buffer_command(command, args)
+                    self.log_io_diagnostics(
+                        "Writer permanently failed, entering degraded mode"
+                    )
+                    _LOGGER.error("Async writer permanently failed, buffering command")
+                    return self._buffer_command(command, args)
 
-                # Send command to queue
                 self._queue.put((command, args))
-                return True
-
-            except Exception as e:
+            except Exception as exc:
                 if attempt < MAX_DB_RETRIES:
                     delay = min(RETRY_BASE_DELAY * (2**attempt), MAX_RETRY_DELAY)
-                    logging.warning(
-                        f"Database write failed (attempt {attempt + 1}/{MAX_DB_RETRIES}): {e}. Retrying in {delay:.1f}s"
+                    _LOGGER.warning(
+                        "Database write failed (attempt %s/%s): %s. Retrying in %.1fs",
+                        attempt + 1,
+                        MAX_DB_RETRIES,
+                        exc,
+                        delay,
                     )
                     time.sleep(delay)
                 else:
-                    logging.error(
-                        f"All database write attempts failed: {e}. Buffering command."
-                    )
+                    _LOGGER.exception("All database write attempts failed. Buffering.")
                     return self._buffer_command(command, args)
-
+            else:
+                return True
         return False
 
-    def _restart_async_writer(self):
-        """
-        Attempt to restart the async database writer process.
-
-        Returns:
-            bool: True if restart was successful, False otherwise
-        """
+    def _restart_async_writer(self) -> bool:
+        """Restart the async writer with throttling."""
         try:
-            current_time = time.time()
-
-            # Prevent too frequent restarts (minimum 30 seconds between attempts)
-            if current_time - self._last_restart_time < 30:
-                logging.warning("Async writer restart attempted too recently, skipping")
+            now = time.time()
+            if now - self._last_restart_time < RESTART_THROTTLE_SECONDS:
+                _LOGGER.warning("Async writer restart attempted too recently, skipping")
                 return False
 
-            # Clean up old writer
             if hasattr(self, "_async_writer") and self._async_writer is not None:
                 try:
                     if self._async_writer.is_alive():
                         self._async_writer.terminate()
                         self._async_writer.join(timeout=5)
-                except Exception as e:
-                    logging.warning(f"Error cleaning up old async writer: {e}")
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.warning("Error cleaning up old async writer: %s", exc)
 
-            # Clean up old queue
             if hasattr(self, "_queue") and self._queue is not None:
                 try:
                     self._queue.close()
-                except Exception as e:
-                    logging.warning(f"Error closing old queue: {e}")
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.warning("Error closing old queue: %s", exc)
 
-            # Create new queue and writer
             self._queue = multiprocessing.JoinableQueue()
             self._async_writer = self._create_async_writer(self._db_credentials, False)
             self._async_writer.start()
 
-            # Wait for initialization
             if not self._async_writer._ready_event.wait(timeout=ASYNC_WRITER_TIMEOUT):
-                logging.error("Restarted async writer failed to initialize")
+                _LOGGER.error("Restarted async writer failed to initialize")
                 return False
 
             self._writer_restart_count += 1
-            self._last_restart_time = current_time
-            logging.info(
-                f"Successfully restarted async writer (restart #{self._writer_restart_count})"
+            self._last_restart_time = now
+            _LOGGER.info(
+                "Successfully restarted async writer (restart #%s)",
+                self._writer_restart_count,
             )
+        except Exception:
+            _LOGGER.exception("Failed to restart async writer")
+            return False
+        else:
             return True
 
-        except Exception as e:
-            logging.error(f"Failed to restart async writer: {e}")
-            return False
+    def _buffer_command(self, command: str, args: SqlArgs = None) -> bool:
+        """Buffer a failed command."""
+        return self._buffer.append(command, args)
 
-    def _buffer_command(self, command, args=None):
-        """
-        Buffer a failed database command for later retry.
-
-        Args:
-            command (str): SQL command to buffer
-            args (tuple): Optional command arguments
-
-        Returns:
-            bool: False (indicates command was buffered, not executed)
-        """
-        try:
-            self._failed_commands_buffer.append((command, args, time.time()))
-            if len(self._failed_commands_buffer) >= MAX_BUFFERED_COMMANDS:
-                logging.warning(
-                    f"Command buffer full ({MAX_BUFFERED_COMMANDS} commands), oldest commands will be dropped"
-                )
-            return False
-        except Exception as e:
-            logging.error(f"Failed to buffer command: {e}")
-            return False
-
-    def _retry_buffered_commands(self):
-        """
-        Attempt to execute all buffered commands after writer recovery.
-        """
-        if not self._failed_commands_buffer:
+    def _retry_buffered_commands(self) -> None:
+        """Retry buffered commands FIFO, skipping old ones."""
+        if not self._buffer:
             return
 
-        retry_count = len(self._failed_commands_buffer)
-        logging.info(f"Retrying {retry_count} buffered database commands")
-
-        # Process buffered commands in FIFO order
+        _LOGGER.info("Retrying %s buffered database commands", len(self._buffer))
         failed_retries = 0
-        while self._failed_commands_buffer:
-            try:
-                command, args, timestamp = self._failed_commands_buffer.popleft()
-                age = time.time() - timestamp
+        while self._buffer:
+            item = self._buffer.popleft()
+            if item is None:
+                break
+            command, args, timestamp = item
+            age = time.time() - timestamp
+            if age > BUFFERED_COMMAND_MAX_AGE:
+                _LOGGER.warning("Skipping old buffered command (age: %.1fs)", age)
+                continue
 
-                # Skip very old commands (older than 5 minutes)
-                if age > 300:
-                    logging.warning(f"Skipping old buffered command (age: {age:.1f}s)")
-                    continue
-
-                # Try to execute the command directly (no retry logic here to avoid recursion)
-                if self._async_writer.is_alive():
+            if self._async_writer.is_alive():
+                try:
                     self._queue.put((command, args))
-                else:
-                    # Writer died again, put command back and stop
-                    self._failed_commands_buffer.appendleft((command, args, timestamp))
-                    logging.error(
-                        "Async writer died again while retrying buffered commands"
-                    )
-                    break
+                except Exception as exc:
+                    failed_retries += 1
+                    _LOGGER.warning("Failed to retry buffered command: %s", exc)
+                    if failed_retries > MAX_BUFFERED_RETRY_FAILURES:
+                        _LOGGER.exception(
+                            "Too many failures retrying buffered commands, stopping"
+                        )
+                        break
+            else:
+                self._buffer.appendleft((command, args, timestamp))
+                _LOGGER.error(
+                    "Async writer died again while retrying buffered commands"
+                )
+                break
 
-            except Exception as e:
-                failed_retries += 1
-                logging.warning(f"Failed to retry buffered command: {e}")
-                if failed_retries > 10:  # Stop if too many consecutive failures
-                    logging.error(
-                        "Too many failures retrying buffered commands, stopping retry"
-                    )
-                    break
-
-        remaining = len(self._failed_commands_buffer)
-        if remaining > 0:
-            logging.warning(f"{remaining} commands remain buffered after retry attempt")
+        remaining = len(self._buffer)
+        if remaining:
+            _LOGGER.warning("%s commands remain buffered after retry", remaining)
         else:
-            logging.info("All buffered commands successfully retried")
+            _LOGGER.info("All buffered commands successfully retried")
 
-    def get_resilience_status(self):
-        """
-        Get current status of database resilience features.
-
-        Returns:
-            dict: Status information including buffer size, restart count, etc.
-        """
+    def get_resilience_status(self) -> dict[str, Any]:
+        """Current resilience status."""
         return {
-            "writer_alive": (
-                self._async_writer.is_alive()
-                if hasattr(self, "_async_writer")
-                else False
-            ),
-            "buffered_commands": len(self._failed_commands_buffer),
+            "writer_alive": self._async_writer.is_alive()
+            if hasattr(self, "_async_writer")
+            else False,
+            "buffered_commands": len(self._buffer) if hasattr(self, "_buffer") else 0,
             "restart_count": self._writer_restart_count,
             "last_restart_time": self._last_restart_time,
             "time_since_last_restart": (
@@ -812,111 +821,78 @@ class BaseResultWriter:
             ),
         }
 
-    def log_io_diagnostics(self, error_context=""):
-        """
-        Log comprehensive I/O diagnostics to help identify SD card issues.
+    def log_io_diagnostics(self, error_context: str = "") -> None:
+        """Delegate to diagnostics reporter."""
+        status = self.get_resilience_status()
+        _DiagnosticsReporter.log(
+            self._db_credentials, self._queue, status, error_context
+        )
 
-        Args:
-            error_context (str): Additional context about when the error occurred
-        """
-        try:
-            status = self.get_resilience_status()
-            db_path = getattr(self, "_db_credentials", {}).get("name", "unknown")
+    @property
+    def _failed_commands_buffer(self) -> deque[tuple[str, SqlArgs, float]]:
+        """Expose buffer for backward compat with tests (deque)."""
+        self._ensure_buffer()
+        return self._buffer.as_deque()
 
-            logging.error(f"Database I/O Issue - {error_context}")
-            logging.error(f"  Database path: {db_path}")
-            logging.error(f"  Writer alive: {status['writer_alive']}")
-            logging.error(f"  Buffered commands: {status['buffered_commands']}")
-            logging.error(f"  Writer restarts: {status['restart_count']}")
-            logging.error(
-                f"  Time since last restart: {status['time_since_last_restart']:.1f}s"
-                if status["time_since_last_restart"]
-                else "Never restarted"
-            )
+    @_failed_commands_buffer.setter
+    def _failed_commands_buffer(self, value: deque[tuple[str, SqlArgs, float]]) -> None:
+        self._ensure_buffer()
+        self._buffer.replace_deque(value)
 
-            # Check disk space and I/O stats if possible
-            if (
-                hasattr(os, "statvfs")
-                and db_path != "unknown"
-                and os.path.exists(os.path.dirname(db_path))
-            ):
-                try:
-                    statvfs = os.statvfs(os.path.dirname(db_path))
-                    # Handle different statvfs implementations
-                    if hasattr(statvfs, "f_available"):
-                        free_space = statvfs.f_frsize * statvfs.f_available
-                        total_space = statvfs.f_frsize * statvfs.f_blocks
-                    else:
-                        free_space = statvfs.f_frsize * statvfs.f_bavail
-                        total_space = statvfs.f_frsize * statvfs.f_blocks
-                    free_percent = (free_space / total_space) * 100
-                    logging.error(
-                        f"  Disk space: {free_space / (1024**3):.2f}GB free ({free_percent:.1f}% of {total_space / (1024**3):.2f}GB)"
-                    )
-                except Exception as e:
-                    logging.error(f"  Could not check disk space: {e}")
+    def _ensure_buffer(self) -> None:
+        """Lazily create the buffer for test shells bypassing __init__."""
+        if not hasattr(self, "_buffer") or self._buffer is None:
+            self._buffer = _BufferedCommandQueue()
 
-            # Log recent queue status
-            if hasattr(self, "_queue"):
-                try:
-                    queue_size = self._queue.qsize()
-                    logging.error(f"  Queue size: {queue_size}")
-                except Exception as e:
-                    logging.error(f"  Could not check queue size: {e}")
+    # -- DDL execution ----------------------------------------------------
 
-        except Exception as e:
-            logging.error(f"Failed to log I/O diagnostics: {e}")
-
-    def _create_table(self, name, fields, engine=None):
-        """
-        Create a database table with specified fields.
-
-        Args:
-            name (str): Table name
-            fields (str): Field definitions for CREATE TABLE
-            engine: Ignored for SQLite (kept for backward compat)
-        """
+    def _create_table(self, name: str, fields: str, engine: Any | None = None) -> None:
+        """Create table if not exists."""
+        _ = engine  # kept for compat
         command = f"CREATE TABLE IF NOT EXISTS {name} ({fields})"
-        logging.info("Creating database table with: " + command)
+        _LOGGER.info("Creating database table with: %s", command)
         self._write_async_command(command)
 
-    def _insert_metadata(self):
-        """Insert experimental metadata into METADATA table (SQLite)."""
-        for k, v in list(self.metadata.items()):
-            # Properly serialize complex metadata values to avoid SQL injection and formatting issues
-            v_serialized = (
-                json.dumps(str(v))
-                if not isinstance(v, (str, int, float, bool, type(None)))
-                else v
+    def _insert_metadata(self) -> None:
+        """Insert metadata (SQLite)."""
+        for key, value in list(self.metadata.items()):
+            serialized: Any = (
+                json.dumps(str(value))
+                if not isinstance(value, (str, int, float, bool, type(None)))
+                else value
+            )
+            if (
+                isinstance(serialized, str)
+                and len(serialized) > METADATA_MAX_VALUE_LENGTH
+            ):
+                serialized = serialized[:METADATA_MAX_VALUE_LENGTH] + "... [TRUNCATED]"
+                _LOGGER.warning("Metadata value for key '%s' was truncated", key)
+            self._write_async_command(
+                "INSERT INTO METADATA VALUES (?, ?)", (key, serialized)
             )
 
-            # Truncate extremely large values as a safety measure
-            max_value_length = METADATA_MAX_VALUE_LENGTH
-            if isinstance(v_serialized, str) and len(v_serialized) > max_value_length:
-                v_serialized = v_serialized[:max_value_length] + "... [TRUNCATED]"
-                logging.warning(
-                    f"Metadata value for key '{k}' was truncated due to size limit"
-                )
-
-            command = "INSERT INTO METADATA VALUES (?, ?)"
-            self._write_async_command(command, (k, v_serialized))
-
-    def _wait_for_queue_empty(self):
-        """Wait for queue to be processed."""
+    def _wait_for_queue_empty(self) -> None:
+        """Block until queue drains."""
         while not self._queue.empty():
-            logging.info("waiting for queue to be processed")
+            _LOGGER.info("waiting for queue to be processed")
             time.sleep(QUEUE_CHECK_INTERVAL)
+
+    # Compatibility shims for old tests that access _insert_dict directly
+    # (no additional code needed - attribute already exists)
+
+
+# ---------------------------------------------------------------------------
+# dbAppender - composition wrapper
+# ---------------------------------------------------------------------------
 
 
 class dbAppender:
-    """
-    Meta-class for appending to existing databases.
+    """Append to an existing SQLite database.
 
-    SQLite-only implementation. Presents available SQLite databases to the user
-    and wraps around SQLiteResultWriter with append functionality enabled.
+    Wraps :class:`ethoscope.io.sqlite.SQLiteResultWriter` with ``erase_old_db=False``.
     """
 
-    _description = {
+    _description: Final[dict[str, Any]] = {
         "overview": "Database appender - appends to existing SQLite databases.",
         "arguments": [
             {
@@ -941,72 +917,48 @@ class dbAppender:
         ],
     }
 
-    def __init__(
+    def __init__(  # noqa: PLR0913,PLR0917
         self,
-        db_credentials,
-        rois,
-        metadata=None,
-        database_to_append="",
-        make_dam_like_table=False,
-        take_frame_shots=False,
-        sensor=None,
-        *args,
-        **kwargs,
-    ):
-        """
-        Initialize the database appender meta-class (SQLite only).
-
-        Args:
-            db_credentials (dict): Database connection credentials (sqlite path)
-            rois (list): List of ROI objects to track
-            metadata (dict): Experimental metadata to store
-            database_to_append (str): Name/path of SQLite database to append to
-            make_dam_like_table (bool): Whether to create DAM-compatible activity table
-            take_frame_shots (bool): Whether to periodically save image snapshots
-            sensor: Optional sensor object for environmental data collection
-        """
-        self.database_to_append = database_to_append
-        self.erase_old_db = False
-        self.db_credentials = db_credentials
-
-        self.rois = rois
-        self.metadata = metadata
-        self.make_dam_like_table = make_dam_like_table
-        self.take_frame_shots = take_frame_shots
-        self.sensor = sensor
-        self.args = args
-        self.kwargs = kwargs
+        db_credentials: DbCredentials,
+        rois: Sequence[ROI],
+        metadata: MetadataDict | None = None,
+        database_to_append: str = "",
+        make_dam_like_table: bool = False,
+        take_frame_shots: bool = False,
+        sensor: Any | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        self.database_to_append: str = database_to_append
+        self.erase_old_db: bool = False
+        self.db_credentials: DbCredentials = db_credentials
+        self.rois: Sequence[ROI] = rois
+        self.metadata: MetadataDict | None = metadata
+        self.make_dam_like_table: bool = make_dam_like_table
+        self.take_frame_shots: bool = take_frame_shots
+        self.sensor: Any | None = sensor
+        self.args: tuple[Any, ...] = args
+        self.kwargs: dict[str, Any] = kwargs
 
         if not self.database_to_append:
-            raise ValueError("database_to_append parameter is required")
+            raise MissingDatabaseNameError()
 
-        # SQLite only – directly create writer
-        logging.info(f"Detected SQLite database: {self.database_to_append}")
+        _LOGGER.info("Detected SQLite database: %s", self.database_to_append)
         self._create_sqlite_writer()
+        _LOGGER.info("We will be appending database: %s", database_to_append)
 
-        logging.info(f"We will be appending database: {database_to_append}")
+    def _create_sqlite_writer(self) -> None:
+        """Create SQLite writer for append."""
+        from .sqlite import SQLiteResultWriter  # noqa: PLC0415
 
-    def _create_sqlite_writer(self):
-        """Create SQLite writer with append functionality."""
-        # Lazy import to avoid circular dependency
-        from .sqlite import SQLiteResultWriter
-
-        # Update db_credentials to point to the existing database
-        sqlite_db_credentials = self.db_credentials.copy()
-
-        # Find the actual path to the SQLite database
+        sqlite_creds = self.db_credentials.copy()
         sqlite_path = self._find_sqlite_database_path(self.database_to_append)
         if not sqlite_path:
-            raise FileNotFoundError(
-                f"SQLite database not found: {self.database_to_append}"
-            )
-
-        sqlite_db_credentials["name"] = sqlite_path
-
-        # Create SQlite writer with erase_old_db=False for append functionality
+            raise DatabaseFileNotFoundError(self.database_to_append)
+        sqlite_creds["name"] = sqlite_path
         self.kwargs.update({"erase_old_db": False})
         self._writer = SQLiteResultWriter(
-            sqlite_db_credentials,
+            sqlite_creds,
             self.rois,
             *self.args,
             metadata=self.metadata,
@@ -1016,85 +968,57 @@ class dbAppender:
             **self.kwargs,
         )
 
-    def _find_sqlite_database_path(self, database_name):
-        """
-        Find the actual file path for a SQLite database.
-
-        Args:
-            database_name (str): Name or partial path of database
-
-        Returns:
-            str: Full path to database file, or None if not found
-        """
-        # If full path is provided and exists, use it
-        if os.path.exists(database_name):
-            logging.info(f"Found SQLite database at: {database_name}")
+    def _find_sqlite_database_path(self, database_name: str) -> str | None:
+        """Locate SQLite file by full path or basename search."""
+        db_path = Path(database_name)
+        if db_path.exists():
+            _LOGGER.info("Found SQLite database at: %s", database_name)
             return database_name
 
-        # Get the basename and ensure it has .db extension
-        db_basename = os.path.basename(database_name)
+        db_basename = db_path.name
         if not db_basename.endswith(".db"):
             db_basename += ".db"
 
-        # Walk the filesystem starting from common ethoscope data locations
-        search_roots = ["/ethoscope_data/results", "/data"]
-
+        search_roots = [Path("/ethoscope_data/results"), Path("/data")]
         for search_root in search_roots:
-            if not os.path.exists(search_root):
+            if not search_root.exists():
                 continue
-
             try:
-                for root, _dirs, files in os.walk(search_root):
-                    if db_basename in files:
-                        full_path = os.path.join(root, db_basename)
-                        logging.info(f"Found SQLite database at: {full_path}")
-                        return full_path
-            except Exception as e:
-                logging.warning(f"Error walking directory {search_root}: {e}")
+                for candidate in search_root.rglob(db_basename):
+                    if candidate.is_file():
+                        _LOGGER.info("Found SQLite database at: %s", candidate)
+                        return str(candidate)
+            except OSError as exc:
+                _LOGGER.warning("Error walking directory %s: %s", search_root, exc)
                 continue
 
-        logging.warning(f"Could not find SQLite database: {database_name}")
+        _LOGGER.warning("Could not find SQLite database: %s", database_name)
         return None
 
     @classmethod
-    def get_available_databases(cls, db_credentials, device_name=""):
-        """
-        Get list of available databases for the dropdown interface.
-
-        Args:
-            db_credentials (dict): Database connection credentials
-            device_name (str): Name of the device
-
-        Returns:
-            list: List of database dictionaries for frontend dropdown
-        """
-        databases_list = []
-
+    def get_available_databases(
+        cls, db_credentials: DbCredentials, device_name: str = ""
+    ) -> list[dict[str, Any]]:
+        """List available databases for UI dropdown."""
+        databases_list: list[dict[str, Any]] = []
         try:
-            from .cache import get_all_databases_info
+            from .cache import get_all_databases_info  # noqa: PLC0415
 
-            # Extract device name from credentials if not provided
             if not device_name and "name" in db_credentials:
                 device_name = db_credentials["name"]
                 if isinstance(device_name, str) and not device_name.startswith(
                     "ETHOSCOPE_"
                 ):
-                    # Extract device ID from path for cache lookup
-                    import re
+                    m = re.search(r"([a-f0-9]{32})", device_name)
+                    if m:
+                        device_name = f"ETHOSCOPE_{m.group(1)[:8].upper()}"
 
-                    device_match = re.search(r"([a-f0-9]{32})", device_name)
-                    if device_match:
-                        device_name = f"ETHOSCOPE_{device_match.group(1)[:8].upper()}"
-
-            databases_info = get_all_databases_info(device_name)
-
-            # Add SQLite databases
-            sqlite_dbs = databases_info.get("SQLite", {})
-            for db_name, db_info in sqlite_dbs.items():
+            info = get_all_databases_info(device_name)
+            for db_name, db_info in info.get("SQLite", {}).items():
                 if (
                     db_info.get("file_exists", False)
-                    and db_info.get("filesize", 0) > 32768
-                ):  # > 32KB
+                    and db_info.get("filesize", 0) > MIN_DB_SIZE_BYTES
+                ):
                     databases_list.append(
                         {
                             "name": db_name,
@@ -1105,21 +1029,20 @@ class dbAppender:
                             "path": db_info.get("path", ""),
                         }
                     )
-
-        except Exception as e:
-            logging.error(f"Error getting available databases: {e}")
-
+        except Exception:
+            _LOGGER.exception("Error getting available databases")
         return databases_list
 
-    # Delegate all other methods to the wrapped writer
-    def __getattr__(self, name):
-        """Delegate all method calls to the wrapped writer instance."""
+    def __getattr__(self, name: str) -> Any:
+        """Delegate to wrapped writer (dunder-safe to avoid recursion)."""
+        if name.startswith("__") or name == "_writer":
+            raise AttributeError(name)
         return getattr(self._writer, name)
 
-    def __enter__(self):
-        """Context manager entry - delegate to wrapped writer."""
+    def __enter__(self) -> Any:
+        """Delegate context entry."""
         return self._writer.__enter__()
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - delegate to wrapped writer."""
-        return self._writer.__exit__(exc_type, exc_val, exc_tb)
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> Any:
+        """Delegate context exit."""
+        return self._writer.__exit__(exc_type, exc_val, exc_tb)  # type: ignore[arg-type]
