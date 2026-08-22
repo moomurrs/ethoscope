@@ -17,8 +17,6 @@ from ethoscope.core.roi import ROI
 class ROITemplateValidationError(Exception):
     """Raised when ROI template validation fails."""
 
-    pass
-
 
 class ROITemplate:
     """
@@ -28,7 +26,7 @@ class ROITemplate:
     """
 
     # JSON Schema for template validation
-    TEMPLATE_SCHEMA = {
+    TEMPLATE_SCHEMA: dict[str, object] = {  # noqa: RUF012
         "type": "object",
         "required": ["template_info", "roi_definition"],
         "properties": {
@@ -355,7 +353,7 @@ class ROITemplate:
         manual_rois = roi_def["manual_rois"]
 
         for i, roi_data in enumerate(manual_rois):
-            polygon = np.array(roi_data["polygon"], dtype=np.float32)
+            polygon = np.array(roi_data["polygon"], dtype=np.int32)
             value = roi_data.get("value", i)
 
             roi = ROI(polygon, idx=i, value=value)
