@@ -1,281 +1,112 @@
 #!/usr/bin/env python3
 """
-Unit tests for camera initialization timeout mechanisms.
+Unit tests for camera initialization watchdog.
 
-Tests the failsafe mechanisms implemented to prevent ethoscope from hanging
-indefinitely during camera initialization, particularly for picamera2 compatibility issues.
+Tests the process-level failsafe that prevents ethoscope from hanging
+indefinitely during camera initialization. Picamera2-only, single-attempt
+fail-fast — no legacy ``picamera`` fallback retry logic.
 """
 
-import logging
-import os
-import queue
+import signal
 import tempfile
-import threading
 import time
-from unittest.mock import MagicMock, Mock, PropertyMock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from ethoscope.control.tracking import ControlThread
-from ethoscope.hardware.input.cameras import OurPiCameraAsync, PiFrameGrabber2
-from ethoscope.utils.debug import EthoscopeException
+
+
+def _make_bare_thread(initial_status="initialising"):
+    thread = object.__new__(ControlThread)
+    thread._info = {"status": initial_status, "error": None, "time": 0}
+    thread._tmp_dir = tempfile.mkdtemp(prefix="ethoscope_watchdog_test_")
+    thread._monit = None
+    thread._metadata = None
+    thread._metadata_cache = None
+    thread._tracking_start_time = None
+    thread._monit_args = ()
+    thread._monit_kwargs = {}
+    thread._last_info_t_stamp = 0
+    thread._last_info_frame_idx = 0
+    thread._last_img_write_time = 0
+    thread._drawer = None
+    thread._default_monitor_info = {"last_positions": None, "last_time_stamp": 0}
+    return thread
 
 
 class TestCameraTimeoutMechanisms:
-    """Test suite for camera initialization timeout and failsafe mechanisms."""
+    """Test suite for camera initialization watchdog (real ControlThread)."""
 
-    def test_timeout_handler_basic_functionality(self):
-        """Test basic timeout handler functionality using a simplified mock."""
+    def test_timeout_handler_sets_error_and_kills_when_initialising(self):
+        thread = _make_bare_thread("initialising")
+        with (
+            patch("ethoscope.control.tracking.time.sleep") as mock_sleep,
+            patch("ethoscope.control.tracking.os.kill") as mock_kill,
+            patch("ethoscope.control.tracking.os.getpid", return_value=1234),
+        ):
+            thread._initialization_timeout_handler()
 
-        class MockControlThread:
-            def __init__(self):
-                self._info = {"status": "initialising"}
-                self.timeout_triggered = False
+        mock_sleep.assert_called_once_with(120)
+        assert thread._info["status"] == "error"
+        assert "Initialization timeout" in thread._info["error"]
+        assert "Process terminated after 2 minutes" in thread._info["error"]
+        mock_kill.assert_called_once_with(1234, signal.SIGKILL)
 
-            def _initialization_timeout_handler(self):
-                """Simplified timeout handler for testing."""
-                # Simulate the timeout check without the actual sleep
-                if self._info["status"] == "initialising":
-                    self._info["status"] = "error"
-                    self._info["error"] = (
-                        "Initialization timeout: Process would be terminated"
-                    )
-                    self._info["time"] = time.time()
-                    self.timeout_triggered = True
+    def test_timeout_handler_ignores_when_not_initialising(self):
+        for status in ("running", "stopped", "error"):
+            thread = _make_bare_thread(status)
+            with (
+                patch("ethoscope.control.tracking.time.sleep"),
+                patch("ethoscope.control.tracking.os.kill") as mock_kill,
+            ):
+                thread._initialization_timeout_handler()
+            assert thread._info["status"] == status
+            mock_kill.assert_not_called()
 
-        mock_thread = MockControlThread()
-        mock_thread._initialization_timeout_handler()
+    def test_timeout_handler_sleeps_120_seconds(self):
+        thread = _make_bare_thread("initialising")
+        with (
+            patch("ethoscope.control.tracking.time.sleep") as mock_sleep,
+            patch("ethoscope.control.tracking.os.kill"),
+            patch("ethoscope.control.tracking.os.getpid", return_value=1),
+        ):
+            thread._initialization_timeout_handler()
+        mock_sleep.assert_called_once_with(120)
 
-        assert mock_thread.timeout_triggered is True
-        assert mock_thread._info["status"] == "error"
-        assert "Initialization timeout" in mock_thread._info["error"]
-
-    def test_timeout_handler_no_trigger_when_not_initialising(self):
-        """Test that timeout handler doesn't trigger when not in initialising state."""
-
-        class MockControlThread:
-            def __init__(self):
-                self._info = {"status": "running"}
-                self.timeout_triggered = False
-
-            def _initialization_timeout_handler(self):
-                """Simplified timeout handler for testing."""
-                if self._info["status"] == "initialising":
-                    self._info["status"] = "error"
-                    self._info["error"] = "Initialization timeout"
-                    self.timeout_triggered = True
-
-        mock_thread = MockControlThread()
-        mock_thread._initialization_timeout_handler()
-
-        # Should not have triggered since status is not 'initialising'
-        assert mock_thread.timeout_triggered is False
-        assert mock_thread._info["status"] == "running"
-
-    def test_picamera2_allocator_error_detection(self):
-        """Test that picamera2 allocator errors are properly identified."""
-
-        # Test the actual error detection logic from the code
-        def is_camera_error(exception):
-            """Simulate the camera error detection from cameras.py"""
-            error_msg = str(exception).lower()
-            exception_type = type(exception).__name__.lower()
-
-            return (
-                "libbcm_host.so" in error_msg
-                or "camera" in error_msg
-                or "mmal" in error_msg
-                or "allocator" in error_msg
-                or "attributeerror" in exception_type
+    def test_run_starts_watchdog_daemon_thread(self):
+        thread = _make_bare_thread("stopped")
+        # Minimal stubs to avoid full ControlThread.run execution
+        # We patch _initialization_timeout_handler to avoid sleep/kill
+        with (
+            patch("ethoscope.control.tracking.threading.Thread") as mock_thread_cls,
+            patch.object(thread, "_initialization_timeout_handler"),
+            patch.object(thread, "_set_tracking_from_scratch", return_value=None),
+        ):
+            mock_instance = Mock()
+            mock_thread_cls.return_value = mock_instance
+            thread.run()
+            # Verify watchdog thread was created with daemon=True
+            mock_thread_cls.assert_called()
+            kwargs = (
+                mock_thread_cls.call_args[1] if mock_thread_cls.call_args[1] else {}
             )
+            args = mock_thread_cls.call_args[0] if mock_thread_cls.call_args[0] else ()
+            # Check daemon=True and target is handler
+            assert kwargs.get("daemon") is True
+            assert kwargs.get("target") == thread._initialization_timeout_handler
+            mock_instance.start.assert_called_once()
 
-        def is_specific_allocator_error(exception):
-            """Simulate the specific allocator error detection"""
-            error_msg = str(exception).lower()
-            exception_type = type(exception).__name__.lower()
-
-            return "allocator" in error_msg and "attributeerror" in exception_type
-
-        # Test with the actual exception from the logs
-        allocator_exception = AttributeError(
-            "'Picamera2' object has no attribute 'allocator'"
-        )
-
-        assert (
-            is_camera_error(allocator_exception) is True
-        ), "Should detect as camera error"
-        assert (
-            is_specific_allocator_error(allocator_exception) is True
-        ), "Should detect as specific allocator error"
-
-    def test_camera_retry_mechanism_logic(self):
-        """Test the retry mechanism logic without full camera initialization."""
-
-        class MockCamera:
-            def __init__(self):
-                self._initialization_attempts = 0
-                self._max_initialization_attempts = 2
-                self._frame_grabber_class = PiFrameGrabber2
-                self.fallback_triggered = False
-
-            def simulate_retry_with_allocator_error(self):
-                """Simulate the retry logic when allocator error occurs."""
-                USE_PICAMERA2 = True
-
-                while self._initialization_attempts < self._max_initialization_attempts:
-                    self._initialization_attempts += 1
-
-                    try:
-                        if self._initialization_attempts == 1:
-                            # First attempt fails with allocator error
-                            raise AttributeError(
-                                "'Picamera2' object has no attribute 'allocator'"
-                            )
-                        else:
-                            # Second attempt should succeed
-                            return "success"
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        exception_type = type(e).__name__.lower()
-                        if (
-                            "allocator" in error_msg
-                            and "attributeerror" in exception_type
-                            and USE_PICAMERA2
-                            and self._initialization_attempts == 1
-                        ):
-                            # Should trigger fallback to legacy camera
-                            from ethoscope.hardware.input.cameras import PiFrameGrabber
-
-                            self._frame_grabber_class = PiFrameGrabber
-                            self.fallback_triggered = True
-                            continue
-
-                        if (
-                            self._initialization_attempts
-                            >= self._max_initialization_attempts
-                        ):
-                            raise e
-
-                return "failed"
-
-        mock_camera = MockCamera()
-        result = mock_camera.simulate_retry_with_allocator_error()
-
-        assert result == "success"
-        assert mock_camera.fallback_triggered is True
-        assert mock_camera._initialization_attempts == 2
-
-
-class TestCameraLogicIntegration:
-    """Integration tests for camera logic without actual hardware."""
-
-    def test_frame_grabber_error_handling_structure(self):
-        """Test that the frame grabber error handling structure is correct."""
-
-        # Test the error categorization logic from PiFrameGrabber2
-        def categorize_error(exception):
-            """Simulate the error categorization from cameras.py"""
-            error_msg = str(exception).lower()
-            exception_type = type(exception).__name__.lower()
-
-            is_hardware_issue = (
-                "libbcm_host.so" in error_msg
-                or "camera" in error_msg
-                or "mmal" in error_msg
-                or "allocator" in error_msg
-                or "attributeerror" in exception_type
-            )
-
-            is_allocator_specific = (
-                "allocator" in error_msg and "attributeerror" in exception_type
-            )
-
-            return {
-                "is_hardware_issue": is_hardware_issue,
-                "is_allocator_specific": is_allocator_specific,
-            }
-
-        # Test various error types
-        allocator_error = AttributeError(
-            "'Picamera2' object has no attribute 'allocator'"
-        )
-        result = categorize_error(allocator_error)
-
-        assert result["is_hardware_issue"] is True
-        assert result["is_allocator_specific"] is True
-
-        # Test non-allocator camera error
-        camera_error = RuntimeError("Camera not found")
-        result = categorize_error(camera_error)
-
-        assert result["is_hardware_issue"] is True
-        assert result["is_allocator_specific"] is False
-
-        # Test non-camera error
-        other_error = ValueError("Some other error")
-        result = categorize_error(other_error)
-
-        assert result["is_hardware_issue"] is False
-        assert result["is_allocator_specific"] is False
-
-    def test_initialization_sequence_structure(self):
-        """Test that the camera initialization sequence structure is sound."""
-
-        class MockCameraInitialization:
-            def __init__(self):
-                self.attempts = []
-                self.success = False
-
-            def simulate_initialization_sequence(self, should_fail_first=True):
-                """Simulate the camera initialization sequence."""
-                max_attempts = 2
-
-                for attempt in range(1, max_attempts + 1):
-                    attempt_info = {"attempt": attempt, "success": False, "error": None}
-
-                    try:
-                        if should_fail_first and attempt == 1:
-                            # First attempt fails
-                            raise AttributeError(
-                                "'Picamera2' object has no attribute 'allocator'"
-                            )
-                        else:
-                            # Subsequent attempts succeed
-                            attempt_info["success"] = True
-                            self.success = True
-
-                    except Exception as e:
-                        attempt_info["error"] = str(e)
-
-                        # Check if we should retry
-                        error_msg = str(e).lower()
-                        should_retry = (
-                            "allocator" in error_msg and attempt < max_attempts
-                        )
-
-                        if not should_retry:
-                            # No more retries, fail
-                            break
-
-                    self.attempts.append(attempt_info)
-
-                    if attempt_info["success"]:
-                        break
-
-                return self.success
-
-        # Test successful retry after first failure
-        mock_init = MockCameraInitialization()
-        success = mock_init.simulate_initialization_sequence(should_fail_first=True)
-
-        assert success is True
-        assert len(mock_init.attempts) == 2
-        assert mock_init.attempts[0]["success"] is False
-        assert mock_init.attempts[1]["success"] is True
-        assert (
-            "'Picamera2' object has no attribute 'allocator'"
-            in mock_init.attempts[0]["error"]
-        )
+    def test_timeout_handler_updates_time(self):
+        thread = _make_bare_thread("initialising")
+        before = time.time()
+        with (
+            patch("ethoscope.control.tracking.time.sleep"),
+            patch("ethoscope.control.tracking.os.kill"),
+            patch("ethoscope.control.tracking.os.getpid", return_value=1),
+        ):
+            thread._initialization_timeout_handler()
+        assert thread._info["time"] >= before
 
 
 if __name__ == "__main__":

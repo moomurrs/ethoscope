@@ -5,10 +5,10 @@ Tests the camera abstraction layer without real hardware:
   * BaseCamera frame iteration/dropping contract
   * MovieVirtualCamera (real mp4 playback via OpenCV)
   * V4L2Camera (mocked capture device)
-  * PiFrameGrabber / PiFrameGrabber2 failure signalling (no camera hardware)
+  * PiFrameGrabber (picamera2) failure signalling (no camera hardware)
   * OurPiCameraAsync lifecycle helpers (state, queue, cleanup)
 
-Camera hardware paths (PiFrameGrabber2 recording, OurPiCameraAsync real
+Camera hardware paths (PiFrameGrabber recording, OurPiCameraAsync real
 initialization) are exercised up to the point where they must talk to
 picamera2, which is stubbed out by the root conftest to signal "no camera".
 """
@@ -30,13 +30,15 @@ from ethoscope.hardware.input.cameras import (
     MovieVirtualCamera,
     OurPiCameraAsync,
     PiFrameGrabber,
-    PiFrameGrabber2,
     V4L2Camera,
 )
 from ethoscope.utils.debug import EthoscopeException
 
 TEST_VIDEO = str(
-    Path(__file__).parent.parent / "static_files" / "videos" / "arena_10x2_sortTubes.mp4"
+    Path(__file__).parent.parent
+    / "static_files"
+    / "videos"
+    / "arena_10x2_sortTubes.mp4"
 )
 
 
@@ -132,9 +134,7 @@ class TestBaseCamera:
 
     def test_iter_respects_max_duration(self):
         # t = frame_idx / 30; stop when t > 0.05 -> ~2 frames
-        cam = _IterCamera(
-            [np.zeros((4, 4), np.uint8)] * 20, max_duration=0.05
-        )
+        cam = _IterCamera([np.zeros((4, 4), np.uint8)] * 20, max_duration=0.05)
         out = list(cam)
         assert 0 < len(out) < 20
 
@@ -364,7 +364,7 @@ class TestV4L2Camera:
 
 
 # ===========================================================================
-# PiFrameGrabber (legacy picamera)
+# PiFrameGrabber (picamera2)
 # ===========================================================================
 
 
@@ -373,10 +373,10 @@ class TestPiFrameGrabber:
         out = tmp_path / "info"
         grabber = object.__new__(PiFrameGrabber)
         PiFrameGrabber._save_camera_info(
-            grabber, {"Model": "imx219", "Num": 0}, save_path=str(out)
+            grabber, {"Model": "imx708", "Num": 0}, save_path=str(out)
         )
         content = out.read_text()
-        assert "imx219" in content
+        assert "imx708" in content
         assert "IFD0.Model" in content  # compatibility double-key
 
     def test_get_video_chunk_filename(self):
@@ -393,28 +393,9 @@ class TestPiFrameGrabber:
 
         assert grabber._get_video_chunk_filename(current=True) == name
 
-    def test_run_puts_none_when_picamera_missing(self):
-        # picamera is not installed in the test environment, so run() must
-        # signal "no camera" by putting None on the queue.
-        grabber = object.__new__(PiFrameGrabber)
-        grabber._queue = queue.Queue()
-        grabber._stop_queue = queue.Queue()
-        grabber._target_resolution = (640, 480)
-        grabber._record_video = False
-
-        grabber.run()
-        assert grabber._queue.get() is None
-
-
-# ===========================================================================
-# PiFrameGrabber2 (picamera2)
-# ===========================================================================
-
-
-class TestPiFrameGrabber2:
     def _make_grabber(self):
         with patch.object(cameras.pi, "get_gain_setting", return_value=1.0):
-            grabber = PiFrameGrabber2(
+            grabber = PiFrameGrabber(
                 target_fps=10,
                 target_resolution=(640, 480),
                 queue=queue.Queue(),
@@ -433,6 +414,193 @@ class TestPiFrameGrabber2:
         with patch.object(cameras.pi, "get_noir_setting", return_value=True):
             grabber.run()
         assert grabber._queue.get() is None
+
+    def test_run_puts_none_when_picamera2_is_none(self):
+        grabber = self._make_grabber()
+        with patch.object(cameras, "Picamera2", None):
+            grabber.run()
+        assert grabber._queue.get() is None
+
+    def test_run_non_camera_exception_does_not_put_none(self):
+        # Exception without camera keywords should take warning branch, not put None.
+        # The stub Picamera2 raises RuntimeError("picamera2 is not available ...") which contains "camera",
+        # so we need to force a non-camera error by making get_noir_setting raise ValueError.
+        grabber = self._make_grabber()
+        with patch.object(
+            cameras.pi, "get_noir_setting", side_effect=ValueError("Some other error")
+        ):
+            grabber.run()
+        # For non-camera errors the queue should have no None; task_done leaves queue empty except the guarded call.
+        # run() does not put None in this branch, so get(timeout=0.1) should raise Empty.
+        with pytest.raises(queue.Empty):
+            grabber._queue.get(timeout=0.1)
+
+    def test_save_camera_info_without_model(self, tmp_path):
+        out = tmp_path / "info2"
+        grabber = object.__new__(PiFrameGrabber)
+        original = {"Num": 0, "Location": 2}
+        PiFrameGrabber._save_camera_info(grabber, dict(original), save_path=str(out))
+        content = out.read_text()
+        assert "Num" in content
+        # When Model absent, IFD0.Model must NOT be injected
+        assert "IFD0.Model" not in content
+
+    def test_save_camera_info_mutates_input_with_model(self, tmp_path):
+        out = tmp_path / "info3"
+        grabber = object.__new__(PiFrameGrabber)
+        data = {"Model": "imx708", "Num": 0}
+        PiFrameGrabber._save_camera_info(grabber, data, save_path=str(out))
+        assert data["IFD0.Model"] == "imx708"
+
+    def test_get_video_chunk_filename_sequential_and_fps_none_and_ext(self):
+        grabber = object.__new__(PiFrameGrabber)
+        grabber._video_prefix = "/tmp/chunk"
+        grabber._target_resolution = (960, 720)
+        grabber.video_quality = 20
+        grabber._file_index = 0
+        grabber._last_computed_filename = ""
+
+        first = grabber._get_video_chunk_filename(fps=None)
+        assert first == "/tmp/chunk_960x720@0fps-20q_00001.h264"
+        second = grabber._get_video_chunk_filename(fps=25)
+        assert second == "/tmp/chunk_960x720@25fps-20q_00002.h264"
+        assert grabber._file_index == 2
+        # current=True returns last without increment
+        assert grabber._get_video_chunk_filename(current=True) == second
+        assert grabber._file_index == 2
+        # custom extension
+        grabber._file_index = 0
+        grabber._last_computed_filename = ""
+        mp4 = grabber._get_video_chunk_filename(fps=10, ext="mp4")
+        assert mp4.endswith(".mp4")
+
+    def test_run_success_puts_frames_and_calls_cleanup(self):
+        # Mock Picamera2 to simulate successful capture of one frame
+        grabber = self._make_grabber()
+        grabber._queue = queue.Queue()
+        grabber._stop_queue = queue.Queue()
+        # pre-signal stop after one frame: make empty side_effect [True, False]
+        # but we need capture_array to be called once
+
+        mock_capture = Mock()
+        mock_capture.__enter__ = Mock(return_value=mock_capture)
+        mock_capture.__exit__ = Mock(return_value=False)
+        mock_capture.global_camera_info.return_value = [{"Model": "imx708", "Num": 0}]
+        mock_capture.create_video_configuration.return_value = Mock()
+        mock_capture.configure = Mock()
+        mock_capture.start = Mock()
+        mock_capture.stop = Mock()
+        # YUV420 frame: height 480 + 240 (U/V) = 720 rows, width 640
+        full_frame = np.zeros((720, 640), dtype=np.uint8)
+        mock_capture.capture_array.return_value = full_frame
+        mock_capture.camera_controls = Mock()
+        mock_capture.camera_controls.get.return_value = "Unknown"
+
+        mock_picamera2 = Mock(return_value=mock_capture)
+        mock_picamera2.load_tuning_file = Mock(return_value=Mock())
+        mock_picamera2.set_logging = Mock()
+
+        # stop queue behavior: first check empty True (enter loop), second False (exit)
+        # Simulate by patching _stop_queue.empty to return True once then False
+        call_count = {"n": 0}
+
+        def empty_side_effect():
+            call_count["n"] += 1
+            return call_count["n"] == 1
+
+        with (
+            patch.object(cameras, "Picamera2", mock_picamera2),
+            patch.object(cameras.pi, "get_noir_setting", return_value=False),
+            patch.object(cameras, "MappedArray"),  # not used in non-record path
+            patch.object(cameras.PiFrameGrabber, "_save_camera_info"),
+            patch.object(OurPiCameraAsync, "_perform_camera_cleanup") as mock_cleanup,
+        ):
+            grabber._stop_queue.empty = empty_side_effect
+            grabber._stop_queue.get = Mock()
+            grabber._stop_queue.task_done = Mock()
+            grabber.run()
+            # After run, queue should have one frame (Y slice)
+            assert not grabber._queue.empty()
+            frame = grabber._queue.get()
+            assert frame.shape == (480, 640)  # Y slice
+            mock_capture.start.assert_called_once()
+            mock_capture.stop.assert_called_once()
+            mock_capture.create_video_configuration.assert_called_once()
+            mock_cleanup.assert_called_once_with(delay=0)
+
+    def test_run_success_with_record_video(self):
+        grabber = self._make_grabber()
+        grabber._target_resolution = (640, 480)
+        grabber._queue = queue.Queue()
+        grabber._stop_queue = queue.Queue()
+        grabber._record_video = True
+        grabber._video_prefix = "/tmp/rec"
+
+        mock_capture = Mock()
+        mock_capture.__enter__ = Mock(return_value=mock_capture)
+        mock_capture.__exit__ = Mock(return_value=False)
+        mock_capture.global_camera_info.return_value = [{"Model": "imx708"}]
+        mock_capture.create_video_configuration.return_value = Mock()
+        mock_capture.configure = Mock()
+        mock_capture.start = Mock()
+        mock_capture.stop = Mock()
+        mock_capture.start_encoder = Mock()
+        mock_capture.stop_encoder = Mock()
+        mock_capture.capture_request = Mock()
+        mock_capture.camera_controls = Mock()
+        mock_capture.camera_controls.get.return_value = "Unknown"
+        # request for preview
+        mock_request = Mock()
+        mock_frame = Mock()
+        mock_frame.array = np.zeros((480, 640), dtype=np.uint8)
+        mock_capture.capture_request.return_value = mock_request
+
+        mock_picamera2 = Mock(return_value=mock_capture)
+        mock_picamera2.load_tuning_file = Mock(return_value=Mock())
+        mock_picamera2.set_logging = Mock()
+
+        mock_encoder = Mock()
+        mock_encoder_cls = Mock(return_value=mock_encoder)
+
+        # Need to patch picamera2.encoders.H264Encoder and MappedArray
+        # Patch at cameras module level for H264Encoder import inside run()
+        import sys
+        import types
+
+        enc_module = types.ModuleType("picamera2.encoders")
+        enc_module.H264Encoder = mock_encoder_cls
+        sys.modules["picamera2.encoders"] = enc_module
+
+        # Use MappedArray mock as context manager
+        mock_mapped = Mock()
+        mock_mapped.__enter__ = Mock(return_value=mock_frame)
+        mock_mapped.__exit__ = Mock(return_value=False)
+
+        call_count = {"n": 0}
+
+        def empty_side_effect():
+            call_count["n"] += 1
+            # Run two iterations to ensure preview refresh triggers, then exit
+            return call_count["n"] <= 2
+
+        # Make preview refresh trigger immediately
+        grabber._PREVIEW_REFRESH_TIME = 0
+
+        with (
+            patch.object(cameras, "Picamera2", mock_picamera2),
+            patch.object(cameras.pi, "get_noir_setting", return_value=False),
+            patch.object(cameras, "MappedArray", return_value=mock_mapped),
+            patch.object(cameras.PiFrameGrabber, "_save_camera_info"),
+            patch.object(OurPiCameraAsync, "_perform_camera_cleanup"),
+        ):
+            grabber._stop_queue.empty = empty_side_effect
+            grabber._stop_queue.get = Mock()
+            grabber._stop_queue.task_done = Mock()
+            # run will execute preview loop then exit
+            grabber.run()
+            mock_capture.start_encoder.assert_called()
+            mock_capture.stop_encoder.assert_called()
+            mock_capture.capture_request.assert_called()
 
 
 # ===========================================================================
@@ -519,15 +687,150 @@ class TestOurPiCameraAsync:
         grabber_class = Mock(return_value=grabber_instance)
 
         with (
-            patch.object(cameras, "queue") as mock_queue_module,
+            patch.object(cameras.queue, "Queue") as mock_queue_cls,
             patch.object(cameras, "time"),
             patch.object(cameras.pi, "get_maxfps_setting", return_value=30),
-            patch.object(cameras, "PiFrameGrabber2", grabber_class),
+            patch.object(cameras, "PiFrameGrabber", grabber_class),
         ):
-            mock_queue_module.Queue.side_effect = lambda maxsize=0: mock_queue
+            mock_queue_cls.side_effect = lambda maxsize=0: mock_queue
             cam = OurPiCameraAsync(target_fps=10, target_resolution=(960, 720))
 
         assert cam._resolution == (960, 720)
         grabber_class.assert_called_once()
         grabber_instance.start.assert_called_once()
         cam._close()
+
+    def test_init_fails_when_first_frame_none(self):
+        mock_queue = Mock()
+        mock_queue.get.return_value = None
+        mock_stop = Mock()
+        mock_stop.empty.return_value = True
+        mock_queue.empty.return_value = True
+        grabber_instance = Mock()
+        grabber_class = Mock(return_value=grabber_instance)
+
+        # mock queue module to return our mocks per call
+        def queue_side_effect(maxsize=0):
+            # first call is _queue, second is _stop_queue
+            queue_side_effect.calls += 1
+            return mock_queue if queue_side_effect.calls == 1 else mock_stop
+
+        queue_side_effect.calls = 0
+
+        with (
+            patch.object(cameras.queue, "Queue") as mock_queue_cls,
+            patch.object(cameras, "time"),
+            patch.object(cameras.pi, "get_maxfps_setting", return_value=30),
+            patch.object(cameras, "PiFrameGrabber", grabber_class),
+            patch.object(OurPiCameraAsync, "_cleanup_frame_grabber") as mock_cleanup,
+        ):
+            mock_queue_cls.side_effect = queue_side_effect
+            with pytest.raises(
+                EthoscopeException, match="Camera hardware not available"
+            ):
+                OurPiCameraAsync(target_fps=10, target_resolution=(640, 480))
+
+        grabber_class.assert_called_once()
+        mock_cleanup.assert_called_once_with(force_global_cleanup=True)
+
+    def test_init_fails_on_queue_empty_timeout(self):
+        mock_queue = Mock()
+        mock_queue.get.side_effect = queue.Empty("timeout")
+        mock_queue.empty.return_value = True
+        mock_stop = Mock()
+        mock_stop.empty.return_value = True
+        grabber_instance = Mock()
+        grabber_class = Mock(return_value=grabber_instance)
+
+        def queue_side_effect(maxsize=0):
+            queue_side_effect.calls += 1
+            return mock_queue if queue_side_effect.calls == 1 else mock_stop
+
+        queue_side_effect.calls = 0
+
+        with (
+            patch.object(cameras.queue, "Queue") as mock_queue_cls,
+            patch.object(cameras, "time"),
+            patch.object(cameras.pi, "get_maxfps_setting", return_value=30),
+            patch.object(cameras, "PiFrameGrabber", grabber_class),
+            patch.object(OurPiCameraAsync, "_cleanup_frame_grabber") as mock_cleanup,
+        ):
+            mock_queue_cls.side_effect = queue_side_effect
+            with pytest.raises(
+                EthoscopeException, match="Camera initialization timeout"
+            ):
+                OurPiCameraAsync(target_fps=10, target_resolution=(640, 480))
+
+        grabber_class.assert_called_once()
+        mock_cleanup.assert_called_once_with(force_global_cleanup=True)
+
+    def test_init_fails_on_corrupted_frame(self):
+        # shape with len < 2 should raise "corrupted"
+        frame = np.zeros((5,), dtype=np.uint8)  # 1-dim
+        mock_queue = Mock()
+        mock_queue.get.return_value = frame
+        grabber_instance = Mock()
+        grabber_class = Mock(return_value=grabber_instance)
+
+        with (
+            patch.object(cameras.queue, "Queue") as mock_queue_cls,
+            patch.object(cameras, "time"),
+            patch.object(cameras.pi, "get_maxfps_setting", return_value=30),
+            patch.object(cameras, "PiFrameGrabber", grabber_class),
+        ):
+            mock_queue_cls.side_effect = lambda maxsize=0: mock_queue
+            with pytest.raises(EthoscopeException, match="corrupted"):
+                OurPiCameraAsync(target_fps=10, target_resolution=(640, 480))
+
+        grabber_class.assert_called_once()
+
+    def test_init_single_attempt_guarantee(self):
+        # Even when queue returns None, ensure no second PiFrameGrabber instantiation
+        mock_queue = Mock()
+        mock_queue.get.return_value = None
+        mock_queue.empty.return_value = True
+        mock_stop = Mock()
+        grabber_instance = Mock()
+        grabber_class = Mock(return_value=grabber_instance)
+
+        def queue_side_effect(maxsize=0):
+            queue_side_effect.calls += 1
+            return mock_queue if queue_side_effect.calls == 1 else mock_stop
+
+        queue_side_effect.calls = 0
+
+        with (
+            patch.object(cameras.queue, "Queue") as mock_queue_cls,
+            patch.object(cameras, "time"),
+            patch.object(cameras.pi, "get_maxfps_setting", return_value=30),
+            patch.object(cameras, "PiFrameGrabber", grabber_class),
+            patch.object(OurPiCameraAsync, "_cleanup_frame_grabber"),
+        ):
+            mock_queue_cls.side_effect = queue_side_effect
+            with pytest.raises(EthoscopeException):
+                OurPiCameraAsync(target_fps=10, target_resolution=(640, 480))
+            assert grabber_class.call_count == 1
+
+    def test_init_rejects_non_integer_fps(self):
+        with (
+            patch.object(cameras, "queue"),
+            patch.object(cameras, "time"),
+            patch.object(cameras.pi, "get_maxfps_setting", return_value=30),
+        ):
+            with pytest.raises(EthoscopeException, match="FPS must be an integer"):
+                OurPiCameraAsync(target_fps=25.5, target_resolution=(640, 480))
+
+    def test_setstate_resets_start_time(self):
+        cam = object.__new__(OurPiCameraAsync)
+        # patch __init__ to avoid real hardware, then test __setstate__ logic partially
+        with patch.object(OurPiCameraAsync, "__init__", lambda self, *a, **k: None):
+            state = {"args": (), "kwargs": {}, "frame_idx": 5, "start_time": 1234.0}
+            # need to set _frame_idx before call, but __setstate__ will call __init__
+            # so patch time.time to control
+            with patch.object(cameras.time, "time", return_value=9999.0):
+                # For __setstate__ we need _frame_idx already? Actually __setstate__ does self.__init__ then sets _frame_idx
+                # Provide minimal attributes
+                cam._frame_idx = 0
+                OurPiCameraAsync.__setstate__(cam, state)
+                assert cam._frame_idx == 5
+                assert cam._start_time == 9999.0

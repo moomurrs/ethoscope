@@ -98,7 +98,7 @@ _Note: You do not need to reinstall the package every time you make changes to P
 ### Device Dependencies (install with `[device]`)
 
 - `opencv-python>=4.0.0` - Computer vision and video processing
-- `picamera>=1.8` - Raspberry Pi camera interface
+- `picamera2` (via apt: `python3-picamera2`) - Raspberry Pi camera interface (Pi Camera v3 NoIR, Trixie)
 - `cherrypy>=3.6.0` - Web server framework
 - `bottle>=0.12.8` - Lightweight web framework
 - `pyserial>=2.7` - Serial communication

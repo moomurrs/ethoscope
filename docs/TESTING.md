@@ -455,8 +455,8 @@ export PYTHONPATH="${PYTHONPATH}:src/ethoscope:src/node"
 # Mock hardware for testing
 pytest -m "not hardware"
 
-# Install hardware dependencies
-pip install RPi.GPIO picamera
+# Install hardware dependencies (picamera2 is apt-only on Trixie)
+pip install RPi.GPIO  # picamera2 via: sudo apt install python3-picamera2
 ```
 
 #### Database Issues

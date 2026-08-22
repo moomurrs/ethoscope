@@ -1,5 +1,4 @@
 import gc
-import importlib.util
 import logging
 import os
 import queue
@@ -20,9 +19,6 @@ from picamera2 import MappedArray, Picamera2
 
 from ethoscope.utils import pi
 from ethoscope.utils.debug import EthoscopeException
-
-USE_PICAMERA2 = True
-CAMERA_AVAILABLE = True
 
 
 class BaseCamera:
@@ -387,6 +383,15 @@ class V4L2Camera(BaseCamera):
 
 
 class PiFrameGrabber(threading.Thread):
+    """
+    Grabs frames from the Raspberry Pi Camera v3 (IMX708 NoIR) via picamera2.
+
+    Designed to be used within :class:`~ethoscope.hardware.input.cameras.OurPiCameraAsync`.
+    Acquisition runs asynchronously in a daemon thread and pushes grayscale
+    (Y-channel) frames into a queue. Also handles chunked H264 recording when
+    requested. Trixie-only, no legacy ``picamera`` fallback.
+    """
+
     def __init__(
         self,
         target_fps,
@@ -400,21 +405,19 @@ class PiFrameGrabber(threading.Thread):
         **kwargs,
     ):
         """
-        Class to grab frames from pi camera. Designed to be used within :class:`~ethoscope.hardware.camreras.camreras.OurPiCameraAsync`
-        This allows to get frames asynchronously as acquisition is a bottleneck.
-
         :param target_fps: desired fps
         :type target_fps: int
         :param target_resolution: the desired resolution (w, h)
         :type target_resolution: (int, int)
-        :param queue: a queue that stores frame and makes them available to the parent process
-        :type queue: :class:`~threading.JoinableQueue`
+        :param queue: a queue that stores frames and makes them available to the parent
+        :type queue: :class:`~queue.Queue`
         :param stop_queue: a queue that can stop the async acquisition
-        :type stop_queue: :class:`~threading.JoinableQueue`
+        :type stop_queue: :class:`~queue.Queue`
         :param args: additional arguments
         :param kwargs: additional keyword arguments
         """
-
+        # Gain is fixed for tracking to avoid noise artefacts (see camera_controls below)
+        self._gain = pi.get_gain_setting()
         self._acquisition_speed = 0
         self._queue = queue
         self._stop_queue = stop_queue
@@ -422,7 +425,7 @@ class PiFrameGrabber(threading.Thread):
         self._target_resolution = target_resolution
 
         # This stuff should not be here in principle but the video recording
-        # must be done from the camera class or else it will be to slow
+        # must be done from the camera class or else it will be too slow
         self._record_video = video_prefix is not None and record_video
         self._video_prefix = video_prefix
         self._VIDEO_CHUNCK_DURATION = 300
@@ -439,17 +442,12 @@ class PiFrameGrabber(threading.Thread):
 
     def _save_camera_info(self, camera_info, save_path="/etc/picamera-version"):
         """
-        PINoIR v1 with picamera
-        {'IFD0.Model': 'RP_ov5647', 'IFD0.Make': 'RaspberryPi'}
+        Save detected camera info to the filesystem so other services can read it.
 
-        PINoIR v2 with picamera
-        {'IFD0.Model': 'RP_imx219', 'IFD0.Make': 'RaspberryPi'}
-
-        v2 with picamera2
-        {'Model': 'imx219', 'Location': 2, 'Rotation': 180, 'Id': '/base/soc/i2c0mux/i2c@1/imx219@10', 'Num': 0}
-
-        We save this information on the filesystem so that it can be retrieved by the system if the system needs to know
-        which camera we are using - this is not ideal but accessing IFD0 from another instance creates weird issues
+        ``camera_info`` is the first element of ``Picamera2.global_camera_info()``.
+        On picamera2 it looks like
+        ``{'Model': 'imx708', 'Location': 2, ...}`` while the legacy path used
+        ``{'IFD0.Model': 'RP_imx219'}`` — we keep the double key for compat.
         """
 
         # double the dictionary key for compatibility between picamera and picamera2
@@ -476,170 +474,15 @@ class PiFrameGrabber(threading.Thread):
 
     def run(self):
         """
-        Initialise pi camera, get frames, convert them fo greyscale, and make them available in a queue.
-        Run stops if the _stop_queue is not empty.
-        """
-
-        # try:
-        # lazy import should only use those on devices
-
-        # Warning: the following causes a major issue with Python 3.8.1
-        # https://www.bountysource.com/issues/86094172-python-3-8-1-typeerror-vc_dispmanx_element_add-argtypes-item-9-in-_argtypes_-passes-a-union-by-value-which-is-unsupported
-        # this should now be fixed in Python 3.8.2 (6/5/2020)
-
-        try:
-            import picamera  # noqa: F811
-            import picamera.array
-        except (ImportError, OSError) as e:
-            logging.error(f"Failed to import picamera: {e}")
-            # Reason: signal the parent that no camera hardware is available so
-            # it doesn't have to wait 30s for the queue.get() timeout. Do NOT
-            # call self._queue.task_done() here — task_done() raises ValueError
-            # when called with no preceding put(), which would crash the thread
-            # silently and mask the real error.
-            self._queue.put(None)
-            return
-
-        try:
-            with picamera.PiCamera(
-                # sensor_mode = 1, #https://picamera.readthedocs.io/en/release-1.13/fov.html#sensor-modes
-                resolution=self._target_resolution,
-                framerate=self._target_fps,
-            ) as capture:
-                self._save_camera_info(capture.exif_tags)
-                w, h = capture.resolution
-
-                if self._record_video:
-                    self._video_time = time.time()
-
-                    frame = np.empty((h, w, 3), dtype=np.uint8)
-                    capture.start_recording(
-                        self._get_video_chunk_filename(fps=capture.framerate),
-                        format="h264",
-                        quality=self.video_quality,
-                    )
-
-                    while self._stop_queue.empty():
-                        capture.capture(frame, format="bgr", use_video_port=True)
-
-                        self._queue.put(frame)
-
-                        capture.wait_recording(self._PREVIEW_REFRESH_TIME)
-
-                        if (
-                            time.time() - self._video_time
-                            >= self._VIDEO_CHUNCK_DURATION
-                        ):
-                            filename_to_hash = self._get_video_chunk_filename(
-                                current=True
-                            )
-                            capture.split_recording(
-                                self._get_video_chunk_filename(fps=capture.framerate)
-                            )
-
-                            # Wait until the file is fully written
-                            stable = False
-                            previous_size = os.path.getsize(filename_to_hash)
-                            time.sleep(0.5)
-                            while not stable:
-                                time.sleep(0.5)
-                                current_size = os.path.getsize(filename_to_hash)
-                                if current_size == previous_size:
-                                    stable = True  # The file size has stabilized, we can proceed with the hash
-                                else:
-                                    previous_size = (
-                                        current_size  # Update size for the next check
-                                    )
-
-                            self._video_time = time.time()
-
-                    capture.stop_recording()
-
-                else:  # Regular acquisition: all frames go in the queue
-                    video_stream = picamera.array.PiYUVArray(
-                        capture, size=self._target_resolution
-                    )
-                    time.sleep(0.2)  # Allow camera to warm up
-                    for frame in capture.capture_continuous(
-                        video_stream, format="yuv", use_video_port=True
-                    ):
-                        if not self._stop_queue.empty():
-                            logging.info(
-                                "The stop queue is not empty. This signals it is time to stop acquiring frames"
-                            )
-                            self._stop_queue.get()
-                            self._stop_queue.task_done()
-                            break
-                        video_stream.seek(0)
-
-                        # stream = picamera.array.PiRGBArray(capture, size=self._target_resolution)
-                        # Capturing in YUV then taking the first dimension is the fastest way to directly get grayscale images
-                        # https://github.com/raspberrypi/picamera2/issues/698
-                        self._queue.put(
-                            frame.array[:, :, 0]
-                        )  # Get first channel (Y) for grayscale
-
-        except Exception as e:
-            # Check if this is a camera hardware issue or PiCamera compatibility issue
-            error_msg = str(e).lower()
-            if (
-                "libbcm_host.so" in error_msg
-                or "camera" in error_msg
-                or "mmal" in error_msg
-                or "allocator" in error_msg
-                or "attributeerror" in error_msg
-            ):
-                logging.error(f"Camera hardware or PiCamera compatibility issue: {e}")
-                # Put a special frame to signal no camera hardware
-                self._queue.put(None)
-            else:
-                logging.warning(f"Some problem acquiring frames from the camera: {e}")
-
-        finally:
-            if self._record_video:
-                try:
-                    capture.stop_recording()  # Ensure we stop recording on exit or exception
-                    logging.info("Stopped recording cleanly.")
-                except Exception:
-                    # capture may be undefined (PiCamera() failed) or recording
-                    # may already have been stopped — both are fine here.
-                    pass
-
-            # Reason: task_done() raises ValueError when called more times than
-            # put() has been called. In failure paths no frames may have been
-            # produced, so guard the call. (Nothing actually waits via
-            # queue.join(), so this is a no-op in the happy path too.)
-            try:
-                self._queue.task_done()
-            except ValueError:
-                pass
-            logging.warning("Camera Frame grabber stopped acquisition cleanly.")
-
-
-class PiFrameGrabber2(PiFrameGrabber):
-    """
-    Same as PiFrameGrabber but uses picamera2
-    """
-
-    def __init__(self, *args, **kwargs):
-        """
-        Initialize PiFrameGrabber2 with configurable gain from system settings.
-        """
-        # Get gain from system setting
-        self._gain = pi.get_gain_setting()
-        super().__init__(*args, **kwargs)
-
-    def run(self):
-        """
-        Initialise pi camera, get frames, convert them fo greyscale, and make them available in a queue.
-        Run stops if the _stop_queue is not empty.
+        Initialise picamera2, get frames, extract Y channel for greyscale, and
+        make them available in a queue. Run stops if the _stop_queue is not empty.
         """
 
         # Check if picamera2 was successfully imported at module level
         if Picamera2 is None:
             logging.error("picamera2 not available - cannot start camera")
-            # Reason: see PiFrameGrabber.run() — put(None) signals "no camera"
-            # to the parent immediately and avoids the task_done() ValueError.
+            # Put None to signal "no camera" to the parent without waiting 30 s
+            # and avoid task_done() ValueError.
             self._queue.put(None)
             return
 
@@ -830,14 +673,9 @@ class PiFrameGrabber2(PiFrameGrabber):
                     while self._stop_queue.empty():
                         frame = capture.capture_array("main")
 
-                        # As for picamera, we take arrays in YUV420 format and then get only the Y channel. The slicing, however, is different.
-                        # from the picamera2 manual, pg 37 https://datasheets.raspberrypi.com/camera/picamera2-manual.pdf
-                        # YUv420 is a slightly special case because the first height rows give the Y channel, the next height/4 rows contain the U
-                        # channel and the final height/4 rows contain the V channel. For the other formats, where there is an "alpha" value it will
-                        # take the fixed value 255
-
-                        # Extract Y channel from YUV420 for grayscale
-                        # ISP has already handled aspect ratio conversion and downscaling
+                        # YUV420: first height rows are Y, next height/4 are U, final height/4 are V.
+                        # See picamera2 manual p.37 https://datasheets.raspberrypi.com/camera/picamera2-manual.pdf
+                        # ISP has already handled aspect ratio conversion and downscaling.
                         self._queue.put(frame[:target_h, :])
 
                     logging.info(
@@ -850,7 +688,7 @@ class PiFrameGrabber2(PiFrameGrabber):
         except Exception as e:
             # Check if this is a camera hardware issue or PiCamera2 compatibility issue
             error_msg = str(e).lower()
-            logging.error(f"PiFrameGrabber2 exception: {e}")
+            logging.error(f"PiFrameGrabber exception: {e}")
             logging.error(f"Exception type: {type(e).__name__}")
             if hasattr(e, "__traceback__"):
                 import traceback
@@ -881,7 +719,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                 logging.warning(f"Some problem acquiring frames from the camera: {e}")
 
         finally:
-            # Ensure camera cleanup for PiFrameGrabber2
+            # Ensure camera cleanup
             try:
                 # Use the static cleanup method with no delay (we're in thread shutdown)
                 OurPiCameraAsync._perform_camera_cleanup(delay=0)
@@ -889,9 +727,7 @@ class PiFrameGrabber2(PiFrameGrabber):
             except Exception as cleanup_e:
                 logging.error(f"Error during frame grabber cleanup: {cleanup_e}")
 
-            # Reason: see PiFrameGrabber finally block — task_done() raises
-            # ValueError if no put() happened. Guard it to keep the thread
-            # exiting cleanly on early failures.
+            # task_done() raises ValueError if no put() happened. Guard it.
             try:
                 self._queue.task_done()
             except ValueError:
@@ -962,16 +798,10 @@ class OurPiCameraAsync(BaseCamera):
             True  # cv2.videocapture object cannot be serialized, hence cannot be picked
         )
         self.isPiCamera = True
-        self._frame_grabber_class = PiFrameGrabber2 if USE_PICAMERA2 else PiFrameGrabber
-
-        # Add fallback mechanism for picamera2 allocator issues
-        self._initialization_attempts = 0
-        self._max_initialization_attempts = 2
+        self._frame_grabber_class = PiFrameGrabber
 
         # Proactively clean up any lingering camera resources before initialization
-        # Only needed for PiCamera2 as it has more complex resource management
-        if USE_PICAMERA2:
-            self._perform_camera_cleanup(delay=1.0)
+        self._perform_camera_cleanup(delay=1.0)
 
         # Get target FPS from system setting if not specified
         if target_fps is None:
@@ -995,121 +825,42 @@ class OurPiCameraAsync(BaseCamera):
         self._queue = queue.Queue(maxsize=1)
         self._stop_queue = queue.Queue(maxsize=1)
 
-        # Retry initialization with fallback mechanisms
-        while self._initialization_attempts < self._max_initialization_attempts:
-            self._initialization_attempts += 1
-            logging.info(
-                f"Camera initialization attempt {self._initialization_attempts}/{self._max_initialization_attempts}"
+        # Single-attempt, fail-fast initialization (no legacy picamera fallback)
+        self._p = self._frame_grabber_class(
+            target_fps,
+            target_resolution,
+            self._queue,
+            self._stop_queue,
+            *args,
+            video_prefix=video_prefix,
+            **kwargs,
+        )
+
+        self._p.daemon = True
+        self._p.start()
+
+        try:
+            logging.info("Waiting for first frame from camera (timeout: 30 seconds)...")
+            self._frame = first_frame = self._queue.get(timeout=30)
+
+            # Check if camera hardware is not available
+            if first_frame is None:
+                logging.error("Camera hardware not available - no video capabilities")
+                self._cleanup_frame_grabber(force_global_cleanup=True)
+                raise EthoscopeException(
+                    "Camera hardware not available. Video tracking and recording are disabled."
+                )
+
+            logging.info("Successfully received first frame from camera")
+
+        except queue.Empty as e:
+            logging.error(
+                "Timeout waiting for first frame from camera (30 seconds expired)"
             )
-
-            try:
-                # If this is a retry and we're using picamera2, try fallback to picamera
-                if self._initialization_attempts > 1 and USE_PICAMERA2:
-                    # Reason: only fall back to legacy picamera if it is
-                    # actually importable. On Bookworm/Bullseye picamera is no
-                    # longer shipped and trying it just burns another 30s on
-                    # the queue.get() timeout while emitting a misleading
-                    # "No module named 'picamera'" error.
-                    if importlib.util.find_spec("picamera") is None:
-                        logging.error(
-                            "picamera2 failed and legacy picamera is not "
-                            "installed — giving up on camera initialization"
-                        )
-                        # Reason: phrasing must include "Camera hardware not
-                        # available" so ControlThread._run() routes this to
-                        # the gentle stopped-with-error path instead of
-                        # logging a full traceback as a fatal crash.
-                        raise EthoscopeException(
-                            "Camera hardware not available: picamera2 is not "
-                            "producing frames (likely V4L2/libcamera timeout) "
-                            "and the legacy picamera module is not installed "
-                            "for fallback. Check the camera ribbon cable and "
-                            "sensor."
-                        )
-                    logging.warning(
-                        "Retrying with legacy PiFrameGrabber due to picamera2 issues"
-                    )
-                    self._frame_grabber_class = PiFrameGrabber
-
-                self._p = self._frame_grabber_class(
-                    target_fps,
-                    target_resolution,
-                    self._queue,
-                    self._stop_queue,
-                    *args,
-                    video_prefix=video_prefix,
-                    **kwargs,
-                )
-
-                self._p.daemon = True
-                self._p.start()
-
-                try:
-                    logging.info(
-                        "Waiting for first frame from camera (timeout: 30 seconds)..."
-                    )
-                    self._frame = first_frame = self._queue.get(timeout=30)
-
-                    # Check if camera hardware is not available
-                    if first_frame is None:
-                        logging.error(
-                            "Camera hardware not available - no video capabilities"
-                        )
-                        self._cleanup_frame_grabber(
-                            force_global_cleanup=True
-                        )  # Hardware failure - use aggressive cleanup
-                        # Add delay to allow hardware to reset between initialization attempts
-                        time.sleep(2.0)
-                        if (
-                            self._initialization_attempts
-                            >= self._max_initialization_attempts
-                        ):
-                            raise EthoscopeException(
-                                "Camera hardware not available. Video tracking and recording are disabled."
-                            )
-                        continue  # Try again
-
-                    logging.info("Successfully received first frame from camera")
-                    break  # Success - exit retry loop
-
-                except queue.Empty as e:
-                    logging.error(
-                        "Timeout waiting for first frame from camera (30 seconds expired)"
-                    )
-                    self._cleanup_frame_grabber(force_global_cleanup=True)
-                    time.sleep(2.0)
-                    if (
-                        self._initialization_attempts
-                        >= self._max_initialization_attempts
-                    ):
-                        raise EthoscopeException(
-                            "Camera initialization timeout: No frames received within 30 seconds. This may indicate a camera hardware issue or picamera2 compatibility problem."
-                        ) from e
-                    continue  # Try again
-
-            except Exception as e:
-                logging.error(
-                    f"Camera initialization attempt {self._initialization_attempts} failed: {e}"
-                )
-                if hasattr(self, "_p"):
-                    self._cleanup_frame_grabber(force_global_cleanup=True)
-                time.sleep(2.0)
-
-                # Check if this is a picamera2-specific error that should trigger fallback
-                error_msg = str(e).lower()
-                if (
-                    "allocator" in error_msg
-                    and "attributeerror" in error_msg
-                    and USE_PICAMERA2
-                    and self._initialization_attempts == 1
-                ):
-                    logging.warning(
-                        "Detected picamera2 allocator issue - will retry with legacy picamera"
-                    )
-                    continue
-
-                if self._initialization_attempts >= self._max_initialization_attempts:
-                    raise e
+            self._cleanup_frame_grabber(force_global_cleanup=True)
+            raise EthoscopeException(
+                "Camera initialization timeout: No frames received within 30 seconds. This may indicate a camera hardware issue or picamera2 compatibility problem."
+            ) from e
 
         if len(first_frame.shape) < 2:
             raise EthoscopeException(
@@ -1153,12 +904,6 @@ class OurPiCameraAsync(BaseCamera):
 
         except Exception as cleanup_e:
             logging.error(f"Error during frame grabber cleanup: {cleanup_e}")
-            # Force terminate if join fails
-            if self._p.is_alive():
-                self._p.terminate()
-                self._p.join(1)
-                if self._p.is_alive():
-                    logging.error("Could not terminate frame grabber process")
 
         finally:
             # Additional cleanup for Picamera2 global state - only on actual failures

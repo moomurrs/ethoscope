@@ -10,6 +10,6 @@
                       "arguments":{}},
         "drawer": {"name":"DefaultDrawer",
                       "arguments":{"draw_frames":true}},
-        "camera": {"name":"DummyPiCameraAsync",
+        "camera": {"name":"MovieVirtualCamera",
                       "arguments":{"path":"/data/ethoscope_ref_videos/2016-03-22_14-36-58_cs_long_validation/2016-03-22_14-36-58_cs_long_validation.mp4"}}
 }
