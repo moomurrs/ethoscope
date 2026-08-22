@@ -14,14 +14,6 @@ from ethoscope.stimulators.multi_stimulator import MultiStimulator
 from ethoscope.stimulators.stimulators import DefaultStimulator, HasInteractedVariable
 from ethoscope.utils.scheduler import DateRangeError, Scheduler
 
-# Optional imports for specific stimulator tests
-try:
-    from ethoscope.stimulators.sleep_depriver_stimulators import mAGO
-
-    HAS_MAGO = True
-except ImportError:
-    HAS_MAGO = False
-
 
 class TestSchedulerTiming(unittest.TestCase):
     """Test scheduler date range parsing and timing logic."""
@@ -145,124 +137,6 @@ class TestStimulatorSchedulingBehavior(unittest.TestCase):
         end_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time))
         return f"{start_str} > {end_str}"
 
-    @unittest.skipUnless(HAS_MAGO, "mAGO stimulator not available")
-    def test_single_stimulator_timing(self):
-        """Test that single stimulator respects its own date range."""
-        # Create active date range
-        date_range = self._format_time_range(self.current_start, self.future_end)
-
-        # Test with mAGO stimulator
-        stimulator = mAGO(
-            hardware_connection=self.mock_hardware_connection,
-            date_range=date_range,
-            min_inactive_time=120,
-            pulse_duration=1000,
-            stimulus_type=1,
-            stimulus_probability=1.0,
-        )
-
-        stimulator.bind_tracker(self.mock_tracker)
-
-        # Mock tracker data for mAGO decision logic
-        self.mock_tracker.positions = []
-        self.mock_tracker.times = []
-        self.mock_tracker.last_time_point = self.now * 1000  # mAGO expects milliseconds
-
-        # Test within active range
-        with patch("time.time", return_value=self.now):
-            interaction, result = stimulator.apply()
-            # Should be able to make decisions (not blocked by scheduler)
-            self.assertIsInstance(interaction, HasInteractedVariable)
-
-        # Test outside active range (in the past)
-        past_date_range = self._format_time_range(self.past_time, self.past_time + 1800)
-        past_stimulator = mAGO(
-            hardware_connection=self.mock_hardware_connection,
-            date_range=past_date_range,
-            min_inactive_time=120,
-            pulse_duration=1000,
-            stimulus_type=1,
-            stimulus_probability=1.0,
-        )
-        past_stimulator.bind_tracker(self.mock_tracker)
-
-        with patch("time.time", return_value=self.now):
-            interaction, result = past_stimulator.apply()
-            # Should be blocked by scheduler
-            self.assertEqual(bool(interaction), False)
-            self.assertEqual(result, {})
-
-    @unittest.skipUnless(HAS_MAGO, "mAGO stimulator not available")
-    def test_multistimulator_double_scheduling_prevention(self):
-        """Test that MultiStimulator doesn't cause double scheduling."""
-        # Create active date range
-        date_range = self._format_time_range(self.current_start, self.future_end)
-
-        sequence = [
-            {
-                "class_name": "mAGO",
-                "arguments": {
-                    "velocity_correction_coef": 0.003,
-                    "min_inactive_time": 120,
-                    "pulse_duration": 1000,
-                    "stimulus_type": 1,
-                    "stimulus_probability": 1.0,
-                },
-                "date_range": date_range,
-            }
-        ]
-
-        multi_stim = MultiStimulator(
-            hardware_connection=self.mock_hardware_connection,
-            stimulator_sequence=sequence,
-        )
-
-        multi_stim.bind_tracker(self.mock_tracker)
-
-        # Mock tracker data
-        self.mock_tracker.positions = []
-        self.mock_tracker.times = []
-        self.mock_tracker.last_time_point = self.now * 1000
-
-        # Patch the individual stimulator's apply method to track calls
-        original_apply = multi_stim._stimulators[0]["instance"].apply
-        apply_call_count = {"count": 0}
-
-        def mock_apply():
-            apply_call_count["count"] += 1
-            return original_apply()
-
-        multi_stim._stimulators[0]["instance"].apply = mock_apply
-
-        # Test decision making
-        with patch("time.time", return_value=self.now):
-            interaction, result = multi_stim._decide()
-
-        # Check if apply() is called appropriately based on interaction result
-        if bool(interaction):  # If there was an interaction
-            self.assertEqual(
-                apply_call_count["count"],
-                1,
-                "apply() should be called exactly once when there's an interaction",
-            )
-        else:  # No interaction, so apply() shouldn't be called
-            # However, the stimulator should still be making decisions and be active
-            self.assertEqual(
-                apply_call_count["count"],
-                0,
-                "apply() shouldn't be called when there's no interaction",
-            )
-            self.assertIn(
-                "active_stimulator",
-                result,
-                "Result should contain active stimulator info",
-            )
-            self.assertEqual(
-                result["active_stimulator"],
-                "mAGO",
-                "mAGO should be the active stimulator",
-            )
-
     def test_multistimulator_inactive_period(self):
         """Test MultiStimulator behavior during inactive periods."""
         # Create inactive date range (in the future)
@@ -289,64 +163,6 @@ class TestStimulatorSchedulingBehavior(unittest.TestCase):
         # Should return no interaction during inactive period
         self.assertEqual(bool(interaction), False)
         self.assertEqual(result, {})
-
-    @unittest.skipUnless(HAS_MAGO, "mAGO stimulator not available")
-    def test_multistimulator_vs_single_stimulator_equivalence(self):
-        """Test that single stimulator and MultiStimulator with one stimulator behave equivalently."""
-        date_range = self._format_time_range(self.current_start, self.future_end)
-
-        # Single stimulator
-        single_stim = mAGO(
-            hardware_connection=self.mock_hardware_connection,
-            date_range=date_range,
-            min_inactive_time=120,
-            pulse_duration=1000,
-            stimulus_type=1,
-            stimulus_probability=1.0,
-        )
-        single_stim.bind_tracker(self.mock_tracker)
-
-        # MultiStimulator with same configuration
-        sequence = [
-            {
-                "class_name": "mAGO",
-                "arguments": {
-                    "velocity_correction_coef": 0.003,
-                    "min_inactive_time": 120,
-                    "pulse_duration": 1000,
-                    "stimulus_type": 1,
-                    "stimulus_probability": 1.0,
-                },
-                "date_range": date_range,
-            }
-        ]
-        multi_stim = MultiStimulator(
-            hardware_connection=self.mock_hardware_connection,
-            stimulator_sequence=sequence,
-        )
-        multi_stim.bind_tracker(self.mock_tracker)
-
-        # Mock consistent tracker state
-        self.mock_tracker.positions = []
-        self.mock_tracker.times = []
-        self.mock_tracker.last_time_point = self.now * 1000
-
-        # Test during active period
-        with patch("time.time", return_value=self.now):
-            single_interaction, single_result = single_stim.apply()
-            multi_interaction, multi_result = multi_stim._decide()
-
-        # Both should have same interaction behavior (both active or both inactive)
-        self.assertEqual(bool(single_interaction), bool(multi_interaction))
-
-        # Test during inactive period
-        with patch("time.time", return_value=self.past_time):
-            single_interaction, single_result = single_stim.apply()
-            multi_interaction, multi_result = multi_stim._decide()
-
-        # Both should be inactive
-        self.assertEqual(bool(single_interaction), False)
-        self.assertEqual(bool(multi_interaction), False)
 
     def test_scheduler_time_precision(self):
         """Test scheduler timing precision to ensure consistent behavior."""

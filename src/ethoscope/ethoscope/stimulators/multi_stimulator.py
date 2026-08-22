@@ -7,7 +7,7 @@ __author__ = "giorgio"
 
 import logging
 
-from ethoscope.hardware.interfaces.interfaces import DefaultInterface
+from ethoscope.hardware.interfaces.optomotor import OptoMotor
 from ethoscope.stimulators.stimulators import BaseStimulator, HasInteractedVariable
 from ethoscope.utils.scheduler import Scheduler
 
@@ -34,7 +34,7 @@ class MultiStimulator(BaseStimulator):
         ],
     }
 
-    _HardwareInterfaceClass = DefaultInterface
+    _HardwareInterfaceClass = OptoMotor
 
     def __init__(
         self, hardware_connection, stimulator_sequence=None, roi_template_config=None
@@ -95,39 +95,14 @@ class MultiStimulator(BaseStimulator):
             logging.debug(
                 "MultiStimulator with same config already logged, creating instance silently"
             )
-        from ethoscope.stimulators.odour_stimulators import (
-            DynamicOdourSleepDepriver,
-            MiddleCrossingOdourStimulator,
-            MiddleCrossingOdourStimulatorFlushed,
-        )
-        from ethoscope.stimulators.optomotor_stimulators import (
-            OptoMidlineCrossStimulator,
-        )
-        from ethoscope.stimulators.sleep_depriver_stimulators import (
-            AGO,
-            ExperimentalSleepDepStimulator,
-            MiddleCrossingStimulator,
-            OptomotorSleepDepriver,
-            OptoSleepDepriver,
-            SleepDepStimulator,
-            mAGO,
-        )
+        from ethoscope.stimulators.composed_stimulator import ComposedStimulator
         from ethoscope.stimulators.stimulators import DefaultStimulator  # noqa: F811
 
-        # Map class names to actual classes
+        # Map class names to actual classes (legacy flat stimulators removed;
+        # only DefaultStimulator and ComposedStimulator remain)
         stimulator_classes = {
             "DefaultStimulator": DefaultStimulator,
-            "SleepDepStimulator": SleepDepStimulator,
-            "OptomotorSleepDepriver": OptomotorSleepDepriver,
-            "MiddleCrossingStimulator": MiddleCrossingStimulator,
-            "ExperimentalSleepDepStimulator": ExperimentalSleepDepStimulator,
-            "DynamicOdourSleepDepriver": DynamicOdourSleepDepriver,
-            "OptoMidlineCrossStimulator": OptoMidlineCrossStimulator,
-            "OptoSleepDepriver": OptoSleepDepriver,
-            "MiddleCrossingOdourStimulator": MiddleCrossingOdourStimulator,
-            "MiddleCrossingOdourStimulatorFlushed": MiddleCrossingOdourStimulatorFlushed,
-            "mAGO": mAGO,
-            "AGO": AGO,
+            "ComposedStimulator": ComposedStimulator,
         }
 
         # Reset stimulators list

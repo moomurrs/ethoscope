@@ -31,25 +31,6 @@ from ethoscope.roi_builders.file_based_roi_builder import FileBasedROIBuilder
 from ethoscope.roi_builders.target_roi_builder import TargetGridROIBuilder
 from ethoscope.stimulators.composed_stimulator import ComposedStimulator
 from ethoscope.stimulators.multi_stimulator import MultiStimulator
-from ethoscope.stimulators.odour_stimulators import (
-    DynamicOdourSleepDepriver,
-    MiddleCrossingOdourStimulator,
-    MiddleCrossingOdourStimulatorFlushed,
-)
-from ethoscope.stimulators.optomotor_stimulators import OptoMidlineCrossStimulator
-from ethoscope.stimulators.sleep_depriver_stimulators import (
-    AGO,
-    ExperimentalSleepDepStimulator,
-    MiddleCrossingStimulator,
-    OptomotorSleepDepriver,
-    OptoSleepDepriver,
-    SleepDepStimulator,
-    mAGO,
-)
-from ethoscope.stimulators.sleep_restriction_stimulators import (
-    SimpleTimeRestrictedStimulator,
-    mAGOSleepRestriction,
-)
 from ethoscope.stimulators.stimulators import DefaultStimulator
 from ethoscope.trackers.adaptive_bg_tracker import AdaptiveBGModel
 from ethoscope.utils import pi
@@ -183,22 +164,6 @@ class ControlThread(Thread):
                     "possible_classes": [
                         DefaultStimulator,
                         ComposedStimulator,
-                        SleepDepStimulator,
-                        OptomotorSleepDepriver,
-                        MiddleCrossingStimulator,
-                        # SystematicSleepDepInteractor,
-                        ExperimentalSleepDepStimulator,
-                        # GearMotorSleepDepStimulator,
-                        # DynamicOdourDeliverer,
-                        DynamicOdourSleepDepriver,
-                        OptoMidlineCrossStimulator,
-                        OptoSleepDepriver,
-                        MiddleCrossingOdourStimulator,
-                        MiddleCrossingOdourStimulatorFlushed,
-                        mAGO,
-                        AGO,
-                        mAGOSleepRestriction,
-                        SimpleTimeRestrictedStimulator,
                         MultiStimulator,
                     ],
                 },

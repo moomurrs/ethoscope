@@ -1,17 +1,9 @@
 import time
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 from ethoscope.stimulators.multi_stimulator import MultiStimulator
-from ethoscope.stimulators.stimulators import DefaultStimulator, HasInteractedVariable
-
-# Optional imports for specific stimulator tests
-try:
-    from ethoscope.stimulators.sleep_depriver_stimulators import mAGO
-
-    HAS_MAGO = True
-except ImportError:
-    HAS_MAGO = False
+from ethoscope.stimulators.stimulators import HasInteractedVariable
 
 
 class TestMultiStimulator(unittest.TestCase):
@@ -178,12 +170,9 @@ class TestMultiStimulator(unittest.TestCase):
             mock_tracker
         )
 
-    @unittest.skipUnless(HAS_MAGO, "mAGO stimulator not available")
-    def test_double_scheduling_prevention_with_mago(self):
+    def test_double_scheduling_prevention_with_composed(self):
         """
-        Test that MultiStimulator doesn't cause double scheduling with mAGO.
-        This test specifically addresses the bug where both MultiStimulator and
-        the individual stimulator were checking date ranges, causing timing issues.
+        Test that MultiStimulator doesn't cause double scheduling with ComposedStimulator.
         """
         current_time = time.time()
         future_time = current_time + 3600
@@ -196,12 +185,13 @@ class TestMultiStimulator(unittest.TestCase):
 
         sequence = [
             {
-                "class_name": "mAGO",
+                "class_name": "ComposedStimulator",
                 "arguments": {
+                    "trigger_type": "inactivity",
+                    "action_type": "motor_pulse",
                     "velocity_correction_coef": 0.003,
                     "min_inactive_time": 120,
                     "pulse_duration": 1000,
-                    "stimulus_type": 1,
                     "stimulus_probability": 1.0,
                 },
                 "date_range": date_range,
@@ -216,7 +206,7 @@ class TestMultiStimulator(unittest.TestCase):
         mock_tracker = Mock()
         mock_tracker.positions = []
         mock_tracker.times = []
-        mock_tracker.last_time_point = current_time * 1000  # mAGO expects milliseconds
+        mock_tracker.last_time_point = current_time * 1000
 
         multi_stim.bind_tracker(mock_tracker)
 
@@ -252,14 +242,11 @@ class TestMultiStimulator(unittest.TestCase):
         # MultiStimulator should check its scheduler once
         self.assertEqual(scheduler_call_count["count"], 1)
 
-        # The individual stimulator should also check its scheduler once when apply() is called
-        # This is expected behavior - each level checks its own scheduler
-        # The issue was that this caused conflicts, which our fix in the frontend addresses
         self.assertGreaterEqual(individual_scheduler_call_count["count"], 0)
 
         # Verify we get a result with active_stimulator metadata
         self.assertIn("active_stimulator", result)
-        self.assertEqual(result["active_stimulator"], "mAGO")
+        self.assertEqual(result["active_stimulator"], "ComposedStimulator")
 
     def test_multistimulator_timing_edge_cases(self):
         """Test MultiStimulator behavior at timing boundaries."""
