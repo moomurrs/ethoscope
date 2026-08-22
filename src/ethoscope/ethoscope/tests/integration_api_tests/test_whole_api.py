@@ -61,11 +61,13 @@ class TestAPI(unittest.TestCase):
         cam.restart()
         mon = Monitor(cam, AdaptiveBGModel, rois, stimulators=stimulators)
 
-        drawer = DefaultDrawer(draw_frames=DRAW_FRAMES)
         tmp = tempfile.mkstemp(suffix="_ethoscope_test.db")[1]
         try:
             print("Making a tmp db: " + tmp)
-            with SQLiteResultWriter({"name": tmp}, rois) as rw:
+            with (
+                DefaultDrawer(draw_frames=DRAW_FRAMES) as drawer,
+                SQLiteResultWriter({"name": tmp}, rois) as rw,
+            ):
                 mon.run(result_writer=rw, drawer=drawer)
         except Exception:  # noqa: BLE001
             self.fail("testAPI raised ExceptionType unexpectedly!")
