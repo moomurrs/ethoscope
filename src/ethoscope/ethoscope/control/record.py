@@ -16,7 +16,7 @@ from collections import OrderedDict
 import cv2
 
 from ethoscope.control.tracking import ControlThread, ExperimentalInformation
-from ethoscope.hardware.input.cameras import OurPiCameraAsync, V4L2Camera
+from ethoscope.hardware.input.cameras import Picamera2Camera, V4L2Camera
 from ethoscope.utils.debug import EthoscopeException
 from ethoscope.utils.description import DescribedObject
 
@@ -87,7 +87,7 @@ class cameraCaptureThread(threading.Thread):
         # piCamera will record video autonomously without help from this class.
         # However if the user wants to record video with a non-pi camera, we need to fall back to recording here.
         self._local_recording = (
-            self._record_video is True and self.camera.isPiCamera is False
+            self._record_video is True and self.camera.hardware_recording is False
         )
 
         self.video_file_index = 0
@@ -155,7 +155,6 @@ class cameraCaptureThread(threading.Thread):
             logging.info("Socket stream initiliased.")
 
         while not self.stop_camera_activity:
-
             # waiting for the streaming connection to be established
             if self._stream:
                 logging.info("Waiting for a connection to start streaming")
@@ -164,7 +163,6 @@ class cameraCaptureThread(threading.Thread):
 
             # processing images one by one
             for ix, (_, frame) in enumerate(self.camera):
-
                 if self.stop_camera_activity:
                     break
 
@@ -194,7 +192,6 @@ class cameraCaptureThread(threading.Thread):
                     self.start_time = time.time()
 
                 if self._stream:
-
                     # annotate frame for streaming
                     frame = cv2.resize(frame, (640, 480))
                     frame = cv2.putText(
@@ -233,7 +230,6 @@ class cameraCaptureThread(threading.Thread):
 
 
 class GeneralVideoRecorder(DescribedObject):
-
     _description = {
         "overview": "A video simple recorder. When using the default camera PI, frames should be multiple of 16 in X and 32 in Y.",
         "arguments": [
@@ -465,7 +461,6 @@ class timedStop(DescribedObject):
 
 
 class ControlThreadVideoRecording(ControlThread):
-
     _evanescent = False
     _option_dict = OrderedDict(
         [
@@ -495,7 +490,7 @@ class ControlThreadVideoRecording(ControlThread):
             (
                 "camera",
                 {
-                    "possible_classes": [OurPiCameraAsync, V4L2Camera],
+                    "possible_classes": [Picamera2Camera, V4L2Camera],
                 },
             ),
         ]
@@ -615,7 +610,9 @@ class ControlThreadVideoRecording(ControlThread):
             )
 
             RecorderClass = self._option_dict["recorder"]["class"]
-            recorder_kwargs = self._option_dict["recorder"][
+            recorder_kwargs = self._option_dict[
+                "recorder"
+            ][
                 "kwargs"
             ]  # {'width': 1280, 'height': 960, 'fps': 25, 'bitrate': 200000, 'quality' : 20}
 

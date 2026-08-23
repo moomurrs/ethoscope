@@ -19,7 +19,7 @@ from ethoscope.core.monitor import Monitor
 from ethoscope.drawers.drawers import DefaultDrawer, NullDrawer
 from ethoscope.hardware.input.cameras import (
     MovieVirtualCamera,
-    OurPiCameraAsync,
+    Picamera2Camera,
     V4L2Camera,
 )
 from ethoscope.hardware.interfaces.interfaces import EthoscopeSensor, HardwareConnection
@@ -190,7 +190,7 @@ class ControlThread(Thread):
                 "camera",
                 {
                     "possible_classes": [
-                        OurPiCameraAsync,
+                        Picamera2Camera,
                         MovieVirtualCamera,
                         V4L2Camera,
                     ],

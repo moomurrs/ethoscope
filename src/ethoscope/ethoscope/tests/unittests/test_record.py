@@ -72,7 +72,7 @@ class _FakeCamera:
     """Duck-typed camera with the attributes cameraCaptureThread needs."""
 
     def __init__(self, is_pi=True, frames=None):
-        self.isPiCamera = is_pi
+        self.hardware_recording = is_pi
         self.fps = 15.0
         self.width = 640
         self.height = 480
@@ -207,7 +207,7 @@ class TestCameraCaptureThread:
         thread._frames = None
         thread.camera = _BoundedCamera(holder=thread)
         thread.camera._frames = [np.zeros((480, 640), np.uint8)] * 3
-        thread.camera.isPiCamera = False
+        thread.camera.hardware_recording = False
         thread._resolution = (640, 480)
         thread._img_path = "/tmp/preview.jpg"
         thread._local_recording = True
@@ -245,7 +245,7 @@ class TestCameraCaptureThread:
             np.zeros((480, 640, 3), np.uint8),
             np.zeros((480, 640, 3), np.uint8),
         ]
-        thread.camera.isPiCamera = True
+        thread.camera.hardware_recording = True
         thread._img_path = "/tmp/preview.jpg"
         thread._local_recording = False
         thread._record_video = False
@@ -265,9 +265,7 @@ class TestCameraCaptureThread:
                 "socket",
                 return_value=server_socket,
             ),
-            patch.object(
-                record_mod.cv2, "imencode", return_value=(True, b"jpeg")
-            ),
+            patch.object(record_mod.cv2, "imencode", return_value=(True, b"jpeg")),
         ):
             thread.run()
 
@@ -452,9 +450,7 @@ class TestControlThreadVideoRecording:
         }
 
         with (
-            patch.object(
-                thread, "_write_light_schedule"
-            ) as mock_write_light,
+            patch.object(thread, "_write_light_schedule") as mock_write_light,
             patch.object(thread, "stop") as mock_stop,
         ):
             thread.run()
