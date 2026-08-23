@@ -1,5 +1,3 @@
-__author__ = "quentin"
-
 import logging
 from collections import deque
 from math import exp, log, log10, pi, sqrt
@@ -27,7 +25,7 @@ class ObjectModel:
     A class to model, update and predict foreground object (i.e. tracked animal).
     """
 
-    def __init__(self, history_length=1000):
+    def __init__(self, history_length=1000, ready_threshold=1000):
         # fixme this should be time, not number of points!
         self._features_header = [
             "fg_model_area",
@@ -37,6 +35,8 @@ class ObjectModel:
         ]
 
         self._history_length = history_length
+        self._ready_threshold = min(int(ready_threshold), int(history_length))
+        self._n_samples = 0
         self._ring_buff = np.zeros(
             (self._history_length, len(self._features_header)),
             dtype=np.float32,
@@ -59,34 +59,39 @@ class ObjectModel:
 
     @property
     def is_ready(self):
-        return self._is_ready
+        return self._n_samples >= self._ready_threshold
 
     @property
     def features_header(self):
         return self._features_header
 
     def update(self, img, contour, time):
+        features = self.compute_features(img, contour)
         self._last_updated_time = time
-        self._ring_buff[self._ring_buff_idx] = self.compute_features(img, contour)
+        self._ring_buff[self._ring_buff_idx] = features
 
         self._ring_buff_idx += 1
+        self._n_samples = min(self._n_samples + 1, self._history_length)
 
         if self._ring_buff_idx == self._history_length:
-            self._is_ready = True
             self._ring_buff_idx = 0
 
-        return self._ring_buff[self._ring_buff_idx]
+        # keep legacy flag in sync for debugging / external checks
+        self._is_ready = self._n_samples >= self._ready_threshold
+
+        return features
 
     def distance(self, features, time):
         if time - self._last_updated_time > self._max_unupdated_duration:
             logging.warning("FG model not updated for too long. Resetting.")
-            self.__init__(self._history_length)
+            self.__init__(self._history_length, self._ready_threshold)
             return 0
 
-        if not self._is_ready:
-            last_row = self._ring_buff_idx + 1
-        else:
-            last_row = self._history_length
+        if self._n_samples == 0:
+            return 0
+
+        # use actual valid samples, not full buffer, until buffer wraps
+        last_row = self._n_samples
 
         means = np.mean(self._ring_buff[:last_row], 0)
 
@@ -94,6 +99,16 @@ class ObjectModel:
         np.abs(self._std_buff[:last_row], self._std_buff[:last_row])
 
         stds = np.mean(self._std_buff[:last_row], 0)
+        # Per-feature std floor to avoid over-tight model in uniform
+        # bright ROIs rejecting slow moves (regression after per-ROI split).
+        # Values chosen as ~0.5* typical std for each feature:
+        # area log10 ~0.1, height ~1.0, mean_grey ~5.0. Prevents
+        # likelihood explosion when ROI variance is naturally low.
+        _std_floor = np.array([0.10, 0.5, 3.0], dtype=np.float32)
+        # align floor length to feature count for forward-compat
+        if len(_std_floor) != len(stds):
+            _std_floor = np.resize(_std_floor, stds.shape)
+        stds = np.maximum(stds, _std_floor)
         if (stds == 0).any():
             return 0
 
@@ -285,8 +300,6 @@ class AdaptiveBGModel(BaseTracker):
         "arguments": [],
     }
 
-    fg_model = ObjectModel()
-
     def __init__(self, roi, data=None):
         """
         Initializes an adaptive background model for tracking a single animal within a specified region of interest (ROI).
@@ -324,6 +337,16 @@ class AdaptiveBGModel(BaseTracker):
             )  # Default: 5x the expected size
             self._max_area = (max_area_factor * self._object_expected_size) ** 2
 
+            # Foreground detection sensitivity (lower = more sensitive to slow moves in bright ROIs)
+            # 15 was too permissive (wide ovals on bright ROIs), 20 is original.
+            self._fg_threshold = int(data.get("fg_threshold", 20))
+            self._max_m_log_lik = float(data.get("max_m_log_lik", 5.6))
+
+            fg_history = int(data.get("fg_history_length", 1000))
+            fg_ready = int(data.get("fg_ready_threshold", 1000))
+            # Clamp ready to history
+            fg_ready = min(fg_ready, fg_history)
+
             # Special mode: disable size filtering for detection analysis
             if data.get("disable_size_filtering", False):
                 self._object_expected_size = 0.001  # Very small - won't affect blur
@@ -332,6 +355,10 @@ class AdaptiveBGModel(BaseTracker):
             # Backward compatibility: use original hardcoded values
             self._object_expected_size = 0.05  # proportion of the roi main axis
             self._max_area = (5 * self._object_expected_size) ** 2
+            self._fg_threshold = 20
+            self._max_m_log_lik = 5.6
+            fg_history = 1000
+            fg_ready = 1000
 
         self._smooth_mode = deque()
         self._smooth_mode_tstamp = deque()
@@ -341,7 +368,7 @@ class AdaptiveBGModel(BaseTracker):
         self.blur_rad = None
 
         self._bg_model = BackgroundModel()
-        self._max_m_log_lik = 5.5
+        self.fg_model = ObjectModel(history_length=fg_history, ready_threshold=fg_ready)
         self._buff_grey = None
         self._buff_object = None
         self._buff_object_old = None
@@ -508,7 +535,9 @@ class AdaptiveBGModel(BaseTracker):
 
         # Background subtraction to isolate foreground objects.
         cv2.subtract(grey, self._bg_model.bg_img.astype(np.uint8), dst=self._buff_fg)
-        cv2.threshold(self._buff_fg, 20, 255, cv2.THRESH_TOZERO, dst=self._buff_fg)
+        cv2.threshold(
+            self._buff_fg, self._fg_threshold, 255, cv2.THRESH_TOZERO, dst=self._buff_fg
+        )
 
         # Backup the foreground buffer for subsequent analysis.
         np.copyto(self._buff_fg_backup, self._buff_fg)
@@ -664,22 +693,33 @@ class AdaptiveBGModel(BaseTracker):
             raise NoPositionError
 
         if len(contours) > 1:
-            if not self.fg_model.is_ready:
-                raise NoPositionError
-
             hulls = [h for h in contours if h.shape[0] >= 3]
 
             if len(hulls) < 1:
                 raise NoPositionError
 
-            is_ambiguous = len(hulls) > 1
+            if not self.fg_model.is_ready:
+                # Warm-up: not enough FG history for reliable likelihood.
+                # Avoid freezing oval on fast moves: pick largest contour
+                # as fallback and treat as unambiguous so BG does not
+                # freeze. Will switch to likelihood-based selection after
+                # ready_threshold (100 samples per ROI) is reached.
+                hull = max(hulls, key=cv2.contourArea)
+                distance = 0
+                is_ambiguous = False
+            else:
+                is_ambiguous = len(hulls) > 1
 
-            cluster_features = [self.fg_model.compute_features(img, h) for h in hulls]
-            all_distances = [self.fg_model.distance(cf, t) for cf in cluster_features]
-            good_clust = np.argmin(all_distances)
+                cluster_features = [
+                    self.fg_model.compute_features(img, h) for h in hulls
+                ]
+                all_distances = [
+                    self.fg_model.distance(cf, t) for cf in cluster_features
+                ]
+                good_clust = np.argmin(all_distances)
 
-            hull = hulls[good_clust]
-            distance = all_distances[good_clust]
+                hull = hulls[good_clust]
+                distance = all_distances[good_clust]
 
         else:
             is_ambiguous = False
