@@ -14,6 +14,11 @@ from ethoscope.utils.rpi_bad_power import powerChecker
 
 PERSISTENT_STATE = "/var/cache/ethoscope/persistent_state.pkl"
 
+# Module-level caches — computed once on first call and never again
+# during the lifetime of the process (i.e. once per ethoscope software start).
+_CACHED_PI_VERSION = None
+_CACHED_PI_CAMERA_VERSION = None
+
 
 def ensure_dir_exists(file_path):
     """
@@ -38,7 +43,11 @@ def pi_version():
     PI 3 Raspberry Pi 3 Model B Rev 1.2
     PI 4 Raspberry Pi 4 Model B Rev 1.5
 
+    Result is cached at module level after the first call (once per process).
     """
+    global _CACHED_PI_VERSION
+    if _CACHED_PI_VERSION is not None:
+        return _CACHED_PI_VERSION
 
     try:
         with open("/sys/firmware/devicetree/base/model") as file:
@@ -53,10 +62,12 @@ def pi_version():
             model_type = None
 
         # Return the information as a dictionary
-        return {"model_number": model_number, "model_type": model_type}
+        _CACHED_PI_VERSION = {"model_number": model_number, "model_type": model_type}
+        return _CACHED_PI_VERSION
 
     except Exception:
-        return {"model_number": 0, "model_type": None}
+        _CACHED_PI_VERSION = {"model_number": 0, "model_type": None}
+        return _CACHED_PI_VERSION
         # return {'error': str(e)}
 
 
@@ -680,7 +691,12 @@ def getPiCameraVersion():
         Pi with camera: {'IFD0.Model': 'RP_imx219', 'IFD0.Make': 'RaspberryPi', 'version': 'PINoIR 2', 'sensor': 'imx219'}
         New ethoscope: "This is a new ethoscope. Run tracking once to detect the camera module"
         No camera: "No camera hardware detected - video capabilities disabled"
+
+    Result is cached at module level after the first call (once per process).
     """
+    global _CACHED_PI_CAMERA_VERSION
+    if _CACHED_PI_CAMERA_VERSION is not None:
+        return _CACHED_PI_CAMERA_VERSION
 
     known_versions = {
         "RP_ov5647": "PINoIR 1",
@@ -718,24 +734,30 @@ def getPiCameraVersion():
                 if "version" not in camera_info and sensor_name in sensor_to_version:
                     camera_info["version"] = sensor_to_version[sensor_name]
 
-            return camera_info
+            _CACHED_PI_CAMERA_VERSION = camera_info
+            return _CACHED_PI_CAMERA_VERSION
 
         except Exception:
             # Fallback: try to provide sensor info even without cache file
             sensor_name = _get_camera_sensor_info()
             if sensor_name and sensor_name in sensor_to_version:
-                return {
+                _CACHED_PI_CAMERA_VERSION = {
                     "sensor": sensor_name,
                     "version": sensor_to_version[sensor_name],
                     "detected_via": "filesystem",
                 }
+                return _CACHED_PI_CAMERA_VERSION
 
-            return (
+            _CACHED_PI_CAMERA_VERSION = (
                 "This is a new ethoscope. Run tracking once to detect the camera module"
             )
+            return _CACHED_PI_CAMERA_VERSION
 
     else:
-        return "No camera hardware detected - video capabilities disabled"
+        _CACHED_PI_CAMERA_VERSION = (
+            "No camera hardware detected - video capabilities disabled"
+        )
+        return _CACHED_PI_CAMERA_VERSION
 
 
 def isSuperscope():
