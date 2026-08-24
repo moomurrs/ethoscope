@@ -2,6 +2,7 @@ __author__ = "quentin"
 
 import logging
 import os
+import time
 
 import cv2
 import numpy as np
@@ -41,6 +42,8 @@ class BaseDrawer:
             cv2.namedWindow(self._live_window_name, cv2.WINDOW_AUTOSIZE)
 
         self._last_drawn_frame = None
+        self._annotate_interval = 1.0
+        self._last_annotate_time = 0.0
 
     def _annotate_frame(self, img, positions, tracking_units):
         """
@@ -73,6 +76,14 @@ class BaseDrawer:
         :type tracking_units: list(:class:`~ethoscope.core.tracking_unit.TrackingUnit`)
         :return:
         """
+
+        needs_full_rate = self._draw_frames or self._video_out is not None
+
+        if not needs_full_rate:
+            now = time.monotonic()
+            if now - self._last_annotate_time < self._annotate_interval:
+                return
+            self._last_annotate_time = now
 
         # Check if pre-allocated buffer exists and has the same dimension/type
         if (
