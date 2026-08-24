@@ -166,25 +166,15 @@ class DefaultDrawer(BaseDrawer):
         """
 
         try:
-            # Position indicator in top-right corner of ROI
+            # ROI is immutable after tracking start - use cached bounding
+            # rectangle computed once at ROI creation (core/roi.py:38) instead
+            # of recomputing max/min over polygon points every frame.
             x, y = roi.offset
-            roi_points = roi.polygon
-
-            # More robust ROI width calculation with safety checks
-            if len(roi_points) > 0:
-                try:
-                    x_coords = [p[0] for p in roi_points]
-                    y_coords = [p[1] for p in roi_points]
-                    roi_width = max(x_coords) - min(x_coords)
-                    roi_height = max(y_coords) - min(y_coords)
-
-                    # Ensure minimum size
-                    roi_width = max(roi_width, 50)
-                    roi_height = max(roi_height, 50)
-                except (TypeError, IndexError, ValueError):
-                    roi_width = 100  # Fallback
-                    roi_height = 100
-            else:
+            try:
+                _, _, roi_width, roi_height = roi.rectangle
+                roi_width = max(roi_width, 50)
+                roi_height = max(roi_height, 50)
+            except Exception:
                 roi_width = 100  # Fallback
                 roi_height = 100
 
