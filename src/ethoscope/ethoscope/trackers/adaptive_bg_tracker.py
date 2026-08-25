@@ -343,7 +343,7 @@ class AdaptiveBGModel(BaseTracker):
             self._max_m_log_lik = float(data.get("max_m_log_lik", 5.6))
 
             fg_history = int(data.get("fg_history_length", 1000))
-            fg_ready = int(data.get("fg_ready_threshold", 1000))
+            fg_ready = int(data.get("fg_ready_threshold", 50))
             # Clamp ready to history
             fg_ready = min(fg_ready, fg_history)
 
@@ -358,7 +358,7 @@ class AdaptiveBGModel(BaseTracker):
             self._fg_threshold = 20
             self._max_m_log_lik = 5.6
             fg_history = 1000
-            fg_ready = 1000
+            fg_ready = 50
 
         self._smooth_mode = deque()
         self._smooth_mode_tstamp = deque()
@@ -553,7 +553,7 @@ class AdaptiveBGModel(BaseTracker):
             self._buff_fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         contours = [
-            cv2.approxPolyDP(c, 1.2, True) for c in contours if cv2.contourArea(c) >= 3
+            cv2.approxPolyDP(c, 1.2, True) for c in contours if cv2.contourArea(c) >= 6
         ]
 
         # Process contours
