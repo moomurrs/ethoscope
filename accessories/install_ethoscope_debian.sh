@@ -539,7 +539,7 @@ LinkLocalAddressing=yes
 ClientIdentifier=mac
 SendHostname=no
 UseHostname=no
-KeepConfiguration=dhcp-on-stop
+KeepConfiguration=yes
 RouteMetric=20
 UseDNS=yes
 EOF
