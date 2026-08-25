@@ -501,6 +501,18 @@ step_enable_system_services() {
 
     systemctl stop man-db.timer 2>/dev/null || true
     systemctl mask man-db.timer 2>/dev/null || true
+
+    raspi-config nonint do_boot_behaviour B4 >/dev/null 2>&1 || true  # default boot: graphical desktop
+    # Copy cmdline.txt and force console-only systemd target (no GUI)
+    printf '%s systemd.unit=multi-user.target\n' "$(cat /boot/firmware/cmdline.txt)" > /boot/firmware/cmdline-console.txt
+    # Bootloader reads GPIO24 before Linux starts:
+    cat >> /boot/firmware/config.txt << 'EOF'
+[all]
+gpio=24=ip,pd
+[gpio24=1]
+cmdline=cmdline-console.txt
+[all]
+EOF
 }
 
 #===============================================================================
