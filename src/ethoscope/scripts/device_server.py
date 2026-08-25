@@ -528,10 +528,7 @@ def get_machine_info(id):
 
     machine_info["Module"] = interfaces.getModuleCapabilities(shallow=True)
 
-    try:
-        machine_info["has_light_hardware"] = pi.has_light_hardware()
-    except Exception:
-        machine_info["has_light_hardware"] = False
+    machine_info["has_light_hardware"] = pi.has_light_hardware()
 
     return machine_info
 
@@ -620,8 +617,9 @@ def info(id):
     _, response_time = send_command(action="status", return_timing=True)
 
     # Read light schedule state
+    light_hw = pi.has_light_hardware()
     light_info = {
-        "hardware": False,
+        "hardware": light_hw,
         "active": False,
         "lights_on": "",
         "lights_off": "",
@@ -629,39 +627,34 @@ def info(id):
         "anchor": None,
         "led_on": False,
     }
-    try:
-        # Check if the light daemon service is running
-        result = subprocess.run(
-            ["systemctl", "is-active", "--quiet", "ethoscope_light.service"],
-            capture_output=True,
-            timeout=3,
-        )
-        light_info["hardware"] = result.returncode == 0
+    if light_hw:
+        try:
+            light_config = "/run/ethoscope/light_schedule.json"
+            if os.path.exists(light_config):
+                with open(light_config) as f:
+                    light_data = json.load(f)
+                light_info["active"] = light_data.get("active", False)
+                light_info["lights_on"] = light_data.get("lights_on", "")
+                light_info["lights_off"] = light_data.get("lights_off", "")
+                light_info["period_minutes"] = light_data.get("period_minutes", 1440)
+                light_info["anchor"] = light_data.get("anchor")
+                if (
+                    light_info["active"]
+                    and light_info["lights_on"]
+                    and light_info["lights_off"]
+                ):
+                    from ethoscope.hardware.interfaces.light_daemon import (
+                        LightController,
+                    )
 
-        light_config = "/run/ethoscope/light_schedule.json"
-        if os.path.exists(light_config):
-            with open(light_config) as f:
-                light_data = json.load(f)
-            light_info["active"] = light_data.get("active", False)
-            light_info["lights_on"] = light_data.get("lights_on", "")
-            light_info["lights_off"] = light_data.get("lights_off", "")
-            light_info["period_minutes"] = light_data.get("period_minutes", 1440)
-            light_info["anchor"] = light_data.get("anchor")
-            if (
-                light_info["active"]
-                and light_info["lights_on"]
-                and light_info["lights_off"]
-            ):
-                from ethoscope.hardware.interfaces.light_daemon import LightController
-
-                light_info["led_on"] = LightController.should_light_be_on(
-                    light_info["lights_on"],
-                    light_info["lights_off"],
-                    period_minutes=light_info["period_minutes"],
-                    anchor=light_info["anchor"],
-                )
-    except Exception as e:
-        logging.debug("Could not read light schedule: %s", e)
+                    light_info["led_on"] = LightController.should_light_be_on(
+                        light_info["lights_on"],
+                        light_info["lights_off"],
+                        period_minutes=light_info["period_minutes"],
+                        anchor=light_info["anchor"],
+                    )
+        except Exception as e:
+            logging.debug("Could not read light schedule: %s", e)
 
     runninginfo.update(
         {
@@ -1083,6 +1076,11 @@ if __name__ == "__main__":
     _MACHINE_ID = pi.get_machine_id()
     _MACHINE_NAME = pi.get_machine_name()
     _GIT_VERSION = pi.get_git_version()
+
+    # Prime the light-hardware cache once at startup. has_light_hardware()
+    # performs a single `systemctl is-enabled` subprocess call and caches the
+    # result for the rest of the process lifetime.
+    pi.has_light_hardware()
 
     _ETHOSCOPE_DIR = "/ethoscope_data"
     _ETHOSCOPE_UPLOAD = os.path.join(_ETHOSCOPE_DIR, "upload")
