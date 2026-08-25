@@ -1,5 +1,6 @@
 import logging
 from collections import deque
+from math import e as E
 from math import exp, log, log10, pi, sqrt
 
 import cv2
@@ -18,6 +19,8 @@ from ethoscope.trackers.trackers import BaseTracker, NoPositionError
 
 CV_VERSION = cv2.getVersionMajor()
 _SQRT_2_PI = sqrt(2.0 * pi)
+# log10(e) for stable log-space Gaussian (exp -> log10 without underflow)
+_LOG10_E = log10(E)
 
 
 class ObjectModel:
@@ -95,10 +98,10 @@ class ObjectModel:
 
         means = np.mean(self._ring_buff[:last_row], 0)
 
-        np.subtract(self._ring_buff[:last_row], means, self._std_buff[:last_row])
-        np.abs(self._std_buff[:last_row], self._std_buff[:last_row])
-
-        stds = np.mean(self._std_buff[:last_row], 0)
+        # True std (not MAD). Previous code used mean(abs(x-mean)) which
+        # underestimates sigma by ~20% (sigma ~= 1.253*MAD for Gaussian).
+        # Use population std (ddof=0); floor below handles n=1 case.
+        stds = np.std(self._ring_buff[:last_row], axis=0)
         # Per-feature std floor to avoid over-tight model in uniform
         # bright ROIs rejecting slow moves (regression after per-ROI split).
         # Values chosen as ~0.5* typical std for each feature:
@@ -109,20 +112,25 @@ class ObjectModel:
         if len(_std_floor) != len(stds):
             _std_floor = np.resize(_std_floor, stds.shape)
         stds = np.maximum(stds, _std_floor)
-        if (stds == 0).any():
-            return 0
+        # Guard NaN/Inf (previous dead `stds==0` after floor is now removed)
+        if np.any(np.isnan(stds)) or np.any(np.isinf(stds)):
+            return float("inf")
 
-        a = 1 / (stds * _SQRT_2_PI)
+        # Stable log-space Gaussian without exp->log10 roundtrip.
+        # Previously: a=1/(std*sqrt2pi), b=exp(-z^2/2), log10(a*b)
+        # Underflow: b==0 -> likelihood==0 incorrectly returned 0 (accept).
+        # Now: log10(p) = -log10(std*sqrt2pi) - 0.5*z^2*log10(e)
+        log10_std_term = np.log10(stds * _SQRT_2_PI)
+        z = (features - means) / stds
+        log10_likelihoods = -log10_std_term - 0.5 * (z * z) * _LOG10_E
 
-        b = np.exp(-((features - means) ** 2) / (2 * stds**2))
-
-        likelihoods = a * b
-
-        if np.any(likelihoods == 0):
-            return 0
+        if np.any(np.isneginf(log10_likelihoods)) or np.any(
+            np.isnan(log10_likelihoods)
+        ):
+            return float("inf")
         # print features, means
-        logls = np.sum(np.log10(likelihoods)) / len(likelihoods)
-        return -1.0 * logls
+        logls = np.mean(log10_likelihoods)
+        return -logls
 
     def compute_features(self, img, contour):
         x, y, w, h = cv2.boundingRect(contour)
