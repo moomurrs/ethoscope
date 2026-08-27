@@ -76,13 +76,13 @@ docs/_build/
 # Environment files
 .env
 
-#folders
+# folders
 Docker/node/etc-ethoscope
 .claude
 Docker/node/.volumes
 node_src/node_modules
 
-#various dev
+# various dev
 sync_from_node.sh
 CLAUDE.local.md
 start_dev_node.sh
@@ -91,6 +91,8 @@ start_dev_node.sh
 # Arduino user-specific config (use versions.h.example as template)
 accessories/hardware/ethoscope_multimodule/versions.h
 
-#MacOS
+# MacOS
 .DS_Store
 **/.DS_Store
+
+ethoscope-analysis-script/
