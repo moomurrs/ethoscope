@@ -61,6 +61,7 @@ import contextlib
 import datetime
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -72,6 +73,8 @@ try:
     import cv2  # type: ignore[import-untyped]
 except Exception:  # pragma: no cover - optional dependency
     cv2 = None  # type: ignore[assignment]
+
+from tqdm import tqdm  # noqa: E402
 
 # Allow running as ``python src/ethoscope/scripts/offline_tracker.py`` without
 # ``pip install`` — ensure ``src/ethoscope`` is on sys.path.  # noqa: E501
@@ -153,6 +156,74 @@ class _HeadlessDrawer(BaseDrawer):
         self, img, positions, tracking_units, reference_points=None
     ) -> None:
         pass
+
+
+class _TqdmCameraProxy:
+    """Thin proxy that updates a tqdm bar on each yielded frame.
+
+    Delegates all attributes to the real camera so ``Monitor`` and
+    ``offline_tracker`` can use it transparently. Only ``__iter__`` is
+    overridden to tick the bar.
+    """
+
+    def __init__(self, cam: Any, pbar: Any) -> None:
+        self._cam = cam
+        self._pbar = pbar
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cam, name)
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        for t, frame in self._cam:
+            yield t, frame
+            self._pbar.update(1)
+
+
+def _get_effective_total_frames(
+    cam: Any,
+    drop_each: int | None,
+    max_duration: float | None,
+) -> int | None:
+    """Return effective yielded-frame count for the progress bar or None.
+
+    ``cam._total_n_frames`` is the raw OpenCV count. Adjust for
+    ``drop_each`` (``BaseCamera`` yields every Nth frame) and
+    ``max_duration`` (stops when ``t > max_duration``). Returns ``None``
+    when the count is unknown or unusable (e.g. live camera, 0).
+    """
+    raw = getattr(cam, "_total_n_frames", None)
+    has_eof = getattr(cam, "_has_end_of_file", False)
+    if raw is None or not has_eof:
+        return None
+    try:
+        raw_i = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if raw_i <= 0:
+        return None
+    total = raw_i
+    if drop_each is not None and drop_each > 1:
+        total = (total + drop_each - 1) // drop_each
+    if max_duration is not None:
+        fps = 0.0
+        try:
+            cap = getattr(cam, "capture", None)
+            if cap is not None:
+                fps = float(cap.get(cv2.CAP_PROP_FPS)) if cv2 is not None else 0.0
+        except Exception:
+            fps = 0.0
+        if fps > 0:
+            md = float(max_duration)
+            # ``BaseCamera`` yields the frame with t>max_duration then breaks,
+            # and the first two frames share t=0, so fps*md undercounts by ~3
+            # when drop_each==1. With drop_each>1 ceil matches actual.
+            if drop_each is None or drop_each <= 1:
+                cap_frames = int(fps * md + 3.5)
+            else:
+                cap_frames = math.ceil(fps * md / drop_each)
+            if cap_frames > 0:
+                total = min(total, cap_frames)
+    return total if total > 0 else None
 
 
 _DEFAULT_ROI_TEMPLATE = "sleep_monitor_20tube"
@@ -289,9 +360,18 @@ def _build_structured_db_path(
             # so final path becomes .../999offline.../ETHOSCOPE_999/<ts>/...
             # but user explicitly pointing inside ETHOSCOPE_999 should just
             # get <ts>/<file> underneath. Handle as special case.
-            return base_results_dir / timestamp_str / f"{timestamp_str}_{_OFFLINE_MACHINE_ID}.db"
+            return (
+                base_results_dir
+                / timestamp_str
+                / f"{timestamp_str}_{_OFFLINE_MACHINE_ID}.db"
+            )
         if parts and parts[-1] == _OFFLINE_MACHINE_ID:
-            return base_results_dir / _OFFLINE_MACHINE_NAME / timestamp_str / f"{timestamp_str}_{_OFFLINE_MACHINE_ID}.db"
+            return (
+                base_results_dir
+                / _OFFLINE_MACHINE_NAME
+                / timestamp_str
+                / f"{timestamp_str}_{_OFFLINE_MACHINE_ID}.db"
+            )
     return (
         base_results_dir
         / _OFFLINE_MACHINE_ID
@@ -454,6 +534,7 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
     take_frame_shots: bool = False,
     make_dam_like_table: bool = False,
     cv_threads: int | None = None,
+    progress: bool | None = None,
 ) -> Path:
     """Run sleep tracking on *input_video* and write results to *output_db*.
 
@@ -511,6 +592,8 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
         cv_threads: OpenCV thread pool size via ``cv2.setNumThreads``.
             ``0``/``1`` disables, ``<0`` resets to default. ``None`` keeps
             default unless ``OPENCV_NUM_THREADS``/``OMP_NUM_THREADS`` env is set.
+        progress: Whether to show a tqdm progress bar. ``None`` (default) auto-enables
+            when ``sys.stderr`` is a TTY; ``True`` forces on, ``False`` forces off.
 
     Returns:
         Path to the written DB (same as ``output_db`` or auto-generated).
@@ -608,8 +691,21 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
             )
         drawer = _HeadlessDrawer()
 
+    # Progress bar — minimal wrapper around the camera iterable
+    show_progress = sys.stderr.isatty() if progress is None else bool(progress)
+    pbar = None
+    cam_for_monitor: Any = cam
+    if show_progress:
+        total = _get_effective_total_frames(cam, drop_each, max_duration)
+        pbar = tqdm(
+            total=total, unit="frame", desc="Tracking", leave=True, dynamic_ncols=True
+        )
+        cam_for_monitor = _TqdmCameraProxy(cam, pbar)
+
     # Monitor — AdaptiveBGModel is the sleep-tracking pipeline
-    monitor = Monitor(cam, AdaptiveBGModel, rois, reference_points=reference_points)
+    monitor = Monitor(
+        cam_for_monitor, AdaptiveBGModel, rois, reference_points=reference_points
+    )
 
     # SQLiteResultWriter expects {"name": path}; erase_old_db=True is offline default
     db_credentials = {"name": str(output_db_p)}
@@ -621,7 +717,11 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
         take_frame_shots=take_frame_shots,
         make_dam_like_table=make_dam_like_table,
     ) as rw:
-        monitor.run(result_writer=rw, drawer=drawer, verbose=verbose)
+        try:
+            monitor.run(result_writer=rw, drawer=drawer, verbose=verbose)
+        finally:
+            if pbar is not None:
+                pbar.close()
 
     # Drawer cleanup: DefaultDrawer holds a VideoWriter
     with contextlib.suppress(Exception):
@@ -721,6 +821,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print progress timestamps every 5 s.",
     )
     p.add_argument(
+        "--progress",
+        dest="progress",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Show tqdm progress bar (frames / %% and ETA). "
+        "Default: auto-enabled when stderr is a TTY; use --no-progress to disable or --progress to force.",
+    )
+    p.add_argument(
         "--drop-each",
         type=int,
         default=None,
@@ -802,6 +910,7 @@ def main(argv: list[str] | None = None) -> int:
             take_frame_shots=args.take_frame_shots,
             make_dam_like_table=args.make_dam_like_table,
             cv_threads=args.cv_threads,
+            progress=args.progress,
         )
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
