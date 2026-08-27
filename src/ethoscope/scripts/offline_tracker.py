@@ -14,30 +14,41 @@ choice.
 
 Standalone usage (no pip install required)::
 
+    # Default: rethomics-compliant hierarchy
+    #   src/ethoscope/output/ethoscope_data/results/999offline.../ETHOSCOPE_999/YYYY-MM-DD_HH-MM-SS/YYYY-MM-DD_HH-MM-SS_999offline....db
     python src/ethoscope/scripts/offline_tracker.py \\
-        src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4 \\
+        src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4 --verbose
+
+    # Explicit results root directory (structured hierarchy created underneath)
+    python src/ethoscope/scripts/offline_tracker.py video.mp4 --db /tmp/my_results --verbose
+
+    # Historic flat file (escape hatch, still supported):
+    python src/ethoscope/scripts/offline_tracker.py video.mp4 \\
         --db src/ethoscope/output/offline.db --verbose
 
     or
 
     cd src/ethoscope/
-    python3 scripts/offline_tracker.py eth10.mp4 --drop-each 3 --db output/offline.db --video-out output/annotated.avi
+    python3 scripts/offline_tracker.py eth10.mp4 --drop-each 3 --video-out output/annotated.avi
 
 Annotated video::
 
     python src/ethoscope/scripts/offline_tracker.py \\  # noqa: E501
         src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4 \\  # noqa: E501
-        --db src/ethoscope/output/offline.db --video-out src/ethoscope/output/annotated.avi  # noqa: E501
+        --video-out src/ethoscope/output/annotated.avi  # noqa: E501
 
 With PYTHONPATH (dev)::
 
     PYTHONPATH=src/ethoscope python -m scripts.offline_tracker \\  # noqa: E501
-        src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4 \\  # noqa: E501
-        --db src/ethoscope/output/offline.db --verbose
+        src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4 --verbose
 
 Programmatic use::
 
     from scripts.offline_tracker import run_offline_tracking  # noqa: E501
+    # Default structured path (rethomics):
+    db = run_offline_tracking(  # noqa: E501
+        "src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4", verbose=True)  # noqa: E501
+    # Explicit file:
     db = run_offline_tracking(  # noqa: E501
         "src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4",  # noqa: E501
         "src/ethoscope/output/out.db", verbose=True)
@@ -47,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import json
 import logging
 import os
@@ -148,6 +160,12 @@ _DEFAULT_VIDEO_DIR = _PROJECT_ROOT / "ethoscope" / "tests" / "static_files" / "v
 _DEFAULT_OUTPUT_DIR = _PROJECT_ROOT / "output"
 _REPO_ROOT = _PROJECT_ROOT.parent.parent  # repo root
 
+# Offline rethomics identity — mirrors live ethoscope layout
+#   /ethoscope_data/results/{machine_id}/{machine_name}/{timestamp}/{timestamp}_{machine_id}.db
+_OFFLINE_MACHINE_ID = "999offlinexxxxxxxxxxxxxxxxxxxxxx"
+_OFFLINE_MACHINE_NAME = "ETHOSCOPE_999"
+_OFFLINE_RESULTS_SUBDIR = Path("ethoscope_data/results")
+
 
 def _configure_cv_threads(n: int | None) -> int | None:
     """Configure OpenCV thread pool via ``cv2.setNumThreads``.
@@ -233,6 +251,100 @@ def _resolve_input_video(path: Path) -> Path:
     return path  # caller will raise FileNotFoundError
 
 
+def _get_offline_timestamp_str(start_time: float) -> str:
+    """Format *start_time* as ``YYYY-MM-DD_HH-MM-SS`` (24h)."""
+    return datetime.datetime.fromtimestamp(start_time).strftime(  # noqa: DTZ006
+        "%Y-%m-%d_%H-%M-%S"
+    )
+
+
+def _build_structured_db_path(
+    timestamp_str: str,
+    base_results_dir: Path | None = None,
+) -> Path:
+    """Return rethomics-compliant DB path for offline tracking.
+
+    Layout mirrors live ethoscope (see ``tracking.py:899-914`` and
+    ``scopr`` docs)::
+
+        {base_results_dir}/{machine_id}/{machine_name}/{timestamp}/{timestamp}_{machine_id}.db
+
+    ``base_results_dir`` is the rethomics *results root*. When ``None``,
+    defaults to ``src/ethoscope/output/ethoscope_data/results`` which is the
+    directory ``rethomics::loadSQLite`` / ``scopr::link_ethoscope_metadata``
+    expects as its ``result_dir`` argument. When a custom directory is given
+    (e.g. via ``--db /tmp/my_results``), it is treated as the results root
+    directly — no extra ``ethoscope_data/results`` prefix is added.
+    """
+    if base_results_dir is None:
+        base_results_dir = _DEFAULT_OUTPUT_DIR / _OFFLINE_RESULTS_SUBDIR
+    else:
+        base_results_dir = Path(base_results_dir)
+        # If user passed a path that already contains the leaf structure
+        # (e.g. .../ETHOSCOPE_999 or .../999offline...), avoid duplicating it.
+        # Detect by checking if the last parts already match offline ids.
+        parts = base_results_dir.parts
+        if parts and parts[-1] == _OFFLINE_MACHINE_NAME:
+            # base is already .../ETHOSCOPE_999 — strip to its parent's parent
+            # so final path becomes .../999offline.../ETHOSCOPE_999/<ts>/...
+            # but user explicitly pointing inside ETHOSCOPE_999 should just
+            # get <ts>/<file> underneath. Handle as special case.
+            return base_results_dir / timestamp_str / f"{timestamp_str}_{_OFFLINE_MACHINE_ID}.db"
+        if parts and parts[-1] == _OFFLINE_MACHINE_ID:
+            return base_results_dir / _OFFLINE_MACHINE_NAME / timestamp_str / f"{timestamp_str}_{_OFFLINE_MACHINE_ID}.db"
+    return (
+        base_results_dir
+        / _OFFLINE_MACHINE_ID
+        / _OFFLINE_MACHINE_NAME
+        / timestamp_str
+        / f"{timestamp_str}_{_OFFLINE_MACHINE_ID}.db"
+    )
+
+
+def _resolve_output_db(
+    output_db: str | Path | None,
+    timestamp_str: str,
+) -> Path:
+    """Resolve ``--db`` / ``output_db`` argument to a concrete DB file path.
+
+    Rules (in order):
+    1. ``None`` → default structured path (``output/ethoscope_data/results/...``).
+    2. Path ending with ``.db`` that is exactly the historic default
+       ``.../output/offline.db`` → treat as ``None`` (migrate to structured).
+    3. Path ending with ``.db`` → use as explicit file path (legacy escape hatch).
+    4. Otherwise treat as a *results root directory* and build structured path
+       underneath it.
+    """
+    if output_db is None:
+        return _build_structured_db_path(timestamp_str)
+
+    p = Path(str(output_db))
+
+    # Historic default flat file — migrate to structured rethomics layout
+    # (both repo-root-relative and cwd-relative forms)
+    default_flat = _DEFAULT_OUTPUT_DIR / "offline.db"
+    try:
+        # Compare after resolving via _resolve_output_path logic
+        resolved = _resolve_output_path(p)
+        if resolved == default_flat.resolve() or (
+            p.name == "offline.db" and p.parent.name == "output"
+        ):
+            return _build_structured_db_path(timestamp_str)
+        # Also handle "src/ethoscope/output/offline.db" form
+        if str(p).endswith("output/offline.db"):
+            return _build_structured_db_path(timestamp_str)
+    except Exception:  # noqa: S110
+        pass
+
+    # Explicit file path (escape hatch)
+    if p.suffix.lower() == ".db":
+        return _resolve_output_path(p)
+
+    # Directory → treat as results root for structured generation
+    base_dir = _resolve_output_path(p)
+    return _build_structured_db_path(timestamp_str, base_results_dir=base_dir)
+
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -272,17 +384,25 @@ def _build_default_metadata(  # noqa: PLR0913, PLR0917
     input_video: Path,
     output_db: Path,
     extra: dict[str, Any] | None = None,
+    start_time: float | None = None,
+    timestamp_str: str | None = None,  # noqa: ARG001 — kept for future templating / explicit override
 ) -> dict[str, Any]:
     """Build rethomics-friendly METADATA expected in ``METADATA`` table.
 
     Mirrors the keys set in ``ethoscope/control/tracking.py:920-934`` so the
     resulting DB is directly loadable with ``rethomics::loadSQLite``.
     ``extra`` keys override defaults (user-supplied --metadata).
+
+    ``start_time`` is the tracking start epoch (seconds). When ``None``,
+    ``time.time()`` is used. ``output_db`` should already be the final
+    structured path (``.../ETHOSCOPE_999/YYYY-MM.../YYYY-MM..._999...db``) so
+    ``backup_filename`` / ``sqlite_source_path`` match the file on disk and
+    the live-ethoscope convention.
     """
-    now = time.time()
+    now = start_time if start_time is not None else time.time()
     meta: dict[str, Any] = {
-        "machine_id": "offline",
-        "machine_name": "offline_tracker",
+        "machine_id": _OFFLINE_MACHINE_ID,
+        "machine_name": _OFFLINE_MACHINE_NAME,
         "date_time": now,
         "frame_width": int(getattr(camera, "width", 0) or 0),
         "frame_height": int(getattr(camera, "height", 0) or 0),
@@ -317,7 +437,7 @@ def _build_default_metadata(  # noqa: PLR0913, PLR0917
 
 def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
     input_video: str | Path,
-    output_db: str | Path,
+    output_db: str | Path | None = None,
     roi_template: str = _DEFAULT_ROI_TEMPLATE,
     template_file: str | Path | None = None,
     template_id: str | None = None,
@@ -338,6 +458,18 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
     """Run sleep tracking on *input_video* and write results to *output_db*.
 
     This is the importable entry point; the CLI ``main()`` delegates here.
+    When ``output_db`` is ``None`` (default) the DB is written to a
+    rethomics-compliant hierarchy::
+
+        src/ethoscope/output/ethoscope_data/results/
+            999offlinexxxxxxxxxxxxxxxxxxxxxx/ETHOSCOPE_999/
+                YYYY-MM-DD_HH-MM-SS/YYYY-MM-DD_HH-MM-SS_999offline....db
+
+    where ``YYYY-MM-DD_HH-MM-SS`` is the wall-clock time at which offline
+    tracking started. This matches the live ethoscope layout
+    (``tracking.py:899-914``) and is directly discoverable by
+    ``rethomics::loadSQLite`` / ``scopr::link_ethoscope_metadata`` when
+    ``result_dir`` is ``.../output/ethoscope_data/results``.
 
     Args:
         input_video: Path to video file readable by OpenCV (mp4/avi/mkv).
@@ -346,7 +478,13 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
         output_db: Path to SQLite file to create (parents are created; existing
             file is removed when ``erase_old_db`` is True — default for offline
             re-runs). The DB contains ``ROI_<idx>``, ``METADATA``, ``VAR_MAP``
-            and is loadable with ``rethomics``.
+            and is loadable with ``rethomics``. When ``None`` (default) a
+            timestamped path inside ``ETHOSCOPE_999`` is auto-generated (see
+            above). When a *directory* is given it is treated as the rethomics
+            ``results`` root and the same hierarchy is created underneath it.
+            When an explicit ``.db`` file is given it is used verbatim (legacy
+            escape hatch). The historic default ``.../output/offline.db`` is
+            automatically migrated to the structured layout.
         roi_template: Builtin template name (default ``sleep_monitor_20tube``).
             Ignored when ``template_file`` / ``template_id`` / ``template_data``
             is given. Available builtins live in
@@ -375,15 +513,20 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
             default unless ``OPENCV_NUM_THREADS``/``OMP_NUM_THREADS`` env is set.
 
     Returns:
-        Path to the written DB (same as ``output_db``).
+        Path to the written DB (same as ``output_db`` or auto-generated).
 
     Raises:
         FileNotFoundError: If input_video or template/metadata file is missing.
         ValueError: On invalid template / metadata arguments.
         EthoscopeException: If video cannot be opened.
     """
+    # Capture wall-clock start *before* any heavy work so folder / filename
+    # and METADATA ``date_time`` are identical to live-ethoscope convention.
+    tracking_start_time = time.time()
+    timestamp_str = _get_offline_timestamp_str(tracking_start_time)
+
     input_video_p = _resolve_input_video(Path(input_video))
-    output_db_p = _resolve_output_path(Path(output_db))
+    output_db_p = _resolve_output_db(output_db, timestamp_str)
 
     if not input_video_p.exists():
         raise FileNotFoundError(  # noqa: TRY003
@@ -438,7 +581,7 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
     reference_points, rois = roi_builder.build(cam)
     cam.restart()
 
-    # Ensure DB parent exists
+    # Ensure DB parent exists (rethomics hierarchy is created here)
     output_db_p.parent.mkdir(parents=True, exist_ok=True)
 
     default_meta = _build_default_metadata(
@@ -448,6 +591,8 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
         input_video_p,
         output_db_p,
         merged_extra,
+        start_time=tracking_start_time,
+        timestamp_str=timestamp_str,
     )
 
     # Drawer choice: headless vs annotated video
@@ -501,20 +646,19 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    default_db = _DEFAULT_OUTPUT_DIR / "offline.db"
     p = argparse.ArgumentParser(
         description="Offline sleep tracking: video file -> SQLite DB.",
         epilog=(
             "Examples (videos in src/ethoscope/ethoscope/tests/static_files/videos/,\n"  # noqa: E501
-            " output in src/ethoscope/output/):\n"
+            " output in src/ethoscope/output/ethoscope_data/results/...):\n"
             "  python src/ethoscope/scripts/offline_tracker.py arena_10x2_sortTubes.mp4 --verbose\n"  # noqa: E501
             "  python src/ethoscope/scripts/offline_tracker.py "  # noqa: E501
-            "src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4 "  # noqa: E501
-            "--db src/ethoscope/output/offline.db --verbose\n"  # noqa: E501
+            "src/ethoscope/ethoscope/tests/static_files/videos/arena_10x2_sortTubes.mp4 --verbose\n"  # noqa: E501
             "  python src/ethoscope/scripts/offline_tracker.py eth10.mp4 "  # noqa: E501
-            "--db src/ethoscope/output/offline.db --video-out src/ethoscope/output/annotated.avi\n"  # noqa: E501
+            "--db /tmp/my_results --video-out /tmp/annotated.avi\n"  # noqa: E501
             "  python src/ethoscope/scripts/offline_tracker.py eth10.mp4 "  # noqa: E501
             '--roi-template sleep_monitor_30tube --metadata \'{"treatment":"drug"}\'\n'  # noqa: E501
+            "  # Historic flat file (escape hatch): --db src/ethoscope/output/offline.db\n"  # noqa: E501
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -529,9 +673,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output-db",
         dest="output_db",
         required=False,
-        default=str(default_db),
-        help="Path to output SQLite DB file "  # noqa: E501
-        "(default: src/ethoscope/output/offline.db). Parents are created.",
+        default=None,
+        help="Path to output SQLite DB file or results root directory. "  # noqa: E501
+        "When omitted (default) a rethomics-compliant hierarchy is created at "  # noqa: E501
+        "src/ethoscope/output/ethoscope_data/results/999offline.../ETHOSCOPE_999/"  # noqa: E501
+        "YYYY-MM-DD_HH-MM-SS/YYYY-MM-DD_HH-MM-SS_999offline...db where "  # noqa: E501
+        "YYYY-MM-DD_HH-MM-SS is the wall-clock start of this run. "  # noqa: E501
+        "When a directory is given it is treated as the results root. "  # noqa: E501
+        "When an explicit .db file is given it is used verbatim. "  # noqa: E501
+        "Historic default src/ethoscope/output/offline.db is auto-migrated to the "  # noqa: E501
+        "structured layout. Parents are created.",
     )
     p.add_argument(
         "--roi-template",
