@@ -107,6 +107,19 @@ class TargetGridROIBuilder(BaseROIBuilder):
                 "description": "Same as horizontal_margin, but vertically.",
                 "default": 0.90,
             },
+            {
+                "type": "boolean",
+                "name": "enable_diagnostics",
+                "description": "Enable diagnostics (saves images+JSON on failure)",
+                "default": False,
+            },
+            {
+                "type": "boolean",
+                "name": "save_success_images",
+                "description": "Also save successes (verbose)",
+                "default": False,
+                "depends_on": {"enable_diagnostics": [True]},
+            },
         ],
     }
 

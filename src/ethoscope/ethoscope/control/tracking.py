@@ -1156,6 +1156,11 @@ class ControlThread(Thread):
         ROIBuilderClass = self._option_dict["roi_builder"]["class"]
         roi_builder_kwargs = self._option_dict["roi_builder"]["kwargs"]
 
+        if roi_builder_kwargs.get("enable_diagnostics") and not roi_builder_kwargs.get(
+            "device_id"
+        ):
+            roi_builder_kwargs = {**roi_builder_kwargs, "device_id": self._info["id"]}
+
         roi_builder = ROIBuilderClass(**roi_builder_kwargs)
 
         try:
