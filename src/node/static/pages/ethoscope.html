@@ -1045,7 +1045,7 @@
                                         {{opt.overview}}
                                     </div>
                                     <ul ng-if="selected_options.tracking[name]['name']==opt.name">
-                                        <li ng-repeat="arg in opt.arguments" ng-if="isArgumentVisible(arg, selected_options.tracking[name]['arguments'])">
+                                        <li ng-repeat="arg in opt.arguments" ng-if="isArgumentVisible(arg, selected_options.tracking[name]['arguments']) && !isSuppressedTrackingArg(name, arg)">
                                             <label ng-if="arg.type != 'boolean' && arg.type != 'date_range' && arg.type != 'select'" for="input-{{arg.name}}" ng-hide="arg.hidden">{{arg.description}}</label>
 
                                             <!-- Select type (for ComposedStimulator trigger/action dropdowns) -->
@@ -1124,6 +1124,36 @@
                             </ul>
                         </div>
                         <hr>
+                    </div>
+                    <!-- Standalone diagnostics controls: always visible (default
+                         disabled), bound to the auto-selected SQLiteResultWriter
+                         arguments. Kept outside the user_options repeat because
+                         the result_writer section is hidden when the MySQL writer
+                         is disabled (hideResultWriterSection). -->
+                    <div ng-if="selected_options.tracking && selected_options.tracking.result_writer"
+                         class="diagnostics-section"
+                         style="margin-top: 15px; padding: 12px 15px; border: 1px solid #dee2e6; border-radius: 6px; background-color: #f8f9fa;">
+                        <h5 style="margin: 0 0 10px 0; font-weight: 600; color: #495057;">
+                            <i class="fa fa-heartbeat"></i> Diagnostics
+                        </h5>
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="enable_diagnostics_toggle"
+                                   name="enable_diagnostics"
+                                   ng-model="selected_options.tracking.result_writer.arguments.enable_diagnostics">
+                            <label class="form-check-label" for="enable_diagnostics_toggle">
+                                Enable diagnostics (records per-frame image quality to the diagnostic table, ~1 sample/second)
+                            </label>
+                        </div>
+                        <div class="form-group" style="margin: 10px 0 0 0;"
+                             ng-if="selected_options.tracking.result_writer.arguments.enable_diagnostics">
+                            <label for="diagnostics_retention_minutes">Retention limit (minutes, 0 = keep all)</label>
+                            <input type="number" class="form-control" id="diagnostics_retention_minutes"
+                                   name="diagnostics_retention_minutes" min="0" step="1" style="max-width: 200px;"
+                                   ng-model="selected_options.tracking.result_writer.arguments.diagnostics_retention_minutes">
+                            <small class="form-text text-muted">
+                                Diagnostic rows older than this are deleted periodically. Set 0 to keep everything.
+                            </small>
+                        </div>
                     </div>
                     <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
                         <div ng-if="!isRoiTemplateSelected() || !isUserSelected() || !isLocationSelected()" class="alert alert-warning" style="margin-bottom: 0; margin-right: 15px; flex: 1; max-width: 60%;">

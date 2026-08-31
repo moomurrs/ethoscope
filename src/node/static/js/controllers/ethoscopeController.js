@@ -404,6 +404,8 @@
                   arguments: {
                     take_frame_shots: true,
                     make_dam_like_table: true,
+                    enable_diagnostics: false,
+                    diagnostics_retention_minutes: 0,
                   },
                 };
 
@@ -433,6 +435,32 @@
               userOptions.update_machine || {},
               $scope,
             );
+
+            // Back-fill diagnostics defaults for the auto-selected result
+            // writer. Covers stale user_options (5-min node cache) or devices
+            // serving a _description that predates the diagnostic table
+            // feature. Existing user edits are never overwritten.
+            if (
+              $scope.selected_options.tracking &&
+              $scope.selected_options.tracking.result_writer
+            ) {
+              if (
+                !$scope.selected_options.tracking.result_writer.arguments
+              ) {
+                $scope.selected_options.tracking.result_writer.arguments = {};
+              }
+              var rwArguments =
+                $scope.selected_options.tracking.result_writer.arguments;
+              if (typeof rwArguments.enable_diagnostics === "undefined") {
+                rwArguments.enable_diagnostics = false;
+              }
+              if (
+                typeof rwArguments.diagnostics_retention_minutes ===
+                "undefined"
+              ) {
+                rwArguments.diagnostics_retention_minutes = 0;
+              }
+            }
 
             // Check database availability for append functionality
             checkDatabaseAvailability();
@@ -595,6 +623,21 @@
 
       $scope.isArgumentVisible = function (arg, currentArgValues) {
         return ethoscopeFormService.isArgumentVisible(arg, currentArgValues);
+      };
+
+      /**
+       * Arguments rendered by the dedicated (always-visible) diagnostics
+       * fieldset instead of the generic argument renderer. Suppressing them
+       * here avoids duplicate checkboxes when the result_writer section is
+       * shown (i.e. when MySQL writer is enabled in node configuration).
+       */
+      $scope.isSuppressedTrackingArg = function (sectionName, arg) {
+        return (
+          sectionName === "result_writer" &&
+          arg &&
+          (arg.name === "enable_diagnostics" ||
+            arg.name === "diagnostics_retention_minutes")
+        );
       };
 
       /**
