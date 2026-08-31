@@ -405,6 +405,7 @@
                     take_frame_shots: true,
                     make_dam_like_table: true,
                     enable_diagnostics: false,
+                    enable_diagnostics_journal: false,
                     diagnostics_retention_minutes: 0,
                   },
                 };
@@ -453,6 +454,11 @@
                 $scope.selected_options.tracking.result_writer.arguments;
               if (typeof rwArguments.enable_diagnostics === "undefined") {
                 rwArguments.enable_diagnostics = false;
+              }
+              if (
+                typeof rwArguments.enable_diagnostics_journal === "undefined"
+              ) {
+                rwArguments.enable_diagnostics_journal = false;
               }
               if (
                 typeof rwArguments.diagnostics_retention_minutes ===
@@ -631,14 +637,15 @@
        * here avoids duplicate checkboxes when the result_writer section is
        * shown (i.e. when MySQL writer is enabled in node configuration).
        */
-      $scope.isSuppressedTrackingArg = function (sectionName, arg) {
-        return (
-          sectionName === "result_writer" &&
-          arg &&
-          (arg.name === "enable_diagnostics" ||
-            arg.name === "diagnostics_retention_minutes")
-        );
-      };
+       $scope.isSuppressedTrackingArg = function (sectionName, arg) {
+         return (
+           sectionName === "result_writer" &&
+           arg &&
+           (arg.name === "enable_diagnostics" ||
+             arg.name === "enable_diagnostics_journal" ||
+             arg.name === "diagnostics_retention_minutes")
+         );
+       };
 
       /**
        * Filter action_type options based on detected module capabilities.
