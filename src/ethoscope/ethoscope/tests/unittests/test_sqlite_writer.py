@@ -19,6 +19,8 @@ import unittest
 from multiprocessing import Queue
 from unittest.mock import Mock, patch
 
+import numpy as np
+
 from ethoscope.core.roi import ROI
 from ethoscope.io.sqlite import AsyncSQLiteWriter, SQLiteResultWriter
 
@@ -893,7 +895,7 @@ class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
             writer._log_diagnostics_to_journal(self._sample_metrics())
 
         self.assertTrue(
-            any("frame_diagnostics" in line for line in captured.output)
+            any("BRIGHTNESS" in line for line in captured.output)
         )
 
     def test_log_diagnostics_swallows_journal_errors(self):
@@ -928,8 +930,8 @@ class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
         ), patch.object(
             writer, "_write_async_command"
         ):
-            writer._record_diagnostics(1000, object())
-            writer._record_diagnostics(1200, object())
+            writer._record_diagnostics(1000, np.zeros((4, 4, 3), dtype=np.uint8))
+            writer._record_diagnostics(1200, np.zeros((4, 4, 3), dtype=np.uint8))
 
         mock_log.assert_called_once_with(self._sample_metrics())
 
@@ -945,7 +947,7 @@ class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
         ), patch.object(
             writer, "_write_async_command"
         ):
-            writer._record_diagnostics(1000, object())
+            writer._record_diagnostics(1000, np.zeros((4, 4, 3), dtype=np.uint8))
 
         mock_log.assert_not_called()
 

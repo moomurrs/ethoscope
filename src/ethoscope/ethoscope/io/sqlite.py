@@ -168,7 +168,7 @@ class SQLiteResultWriter(BaseResultWriter):
     """
 
     _description = {
-        "overview": "SQLite result writer - stores tracking data to local SQLite database file using consistent directory structure. Each experiment creates a unique file, preserving historical data. Compatible with rsync-based backups. Supports sensor data collection when sensors are available. Optionally records per-frame image quality metrics to a 'diagnostic' table when enable_diagnostics is turned on.",
+        "overview": "SQLite result writer - stores tracking data to local SQLite database file using consistent directory structure. Each experiment creates a unique file, preserving historical data. Compatible with rsync-based backups. Supports sensor data collection when sensors are available. Optionally records per-frame image quality metrics (computed over the union of the arena ROI polygons) to a 'diagnostic' table when enable_diagnostics is turned on.",
         "arguments": [
             {
                 "name": "take_frame_shots",
@@ -184,7 +184,7 @@ class SQLiteResultWriter(BaseResultWriter):
             },
             {
                 "name": "enable_diagnostics",
-                "description": "Record per-frame image quality diagnostics (brightness, contrast, entropy, edge density) to the 'diagnostic' table",
+                "description": "Record per-frame image quality diagnostics (brightness, contrast, entropy, edge density; computed over the union of the arena ROI polygons) to the 'diagnostic' table",
                 "type": "boolean",
                 "default": False,
             },
@@ -255,6 +255,10 @@ class SQLiteResultWriter(BaseResultWriter):
         self._diagnostics_period = DIAGNOSTICS_PERIOD_SECONDS
         self._diagnostics_last_tick = -1
         self._diagnostics_last_retention_sweep = 0.0
+        # Arena mask cache (built lazily by _get_arena_mask).
+        self._diagnostics_arena_mask = None
+        self._diagnostics_arena_mask_shape = None
+        self._diagnostics_mask_warned = False
 
         # SQLite-specific parameter overrides
         # Remove any conflicting arguments from kwargs to avoid duplicate argument errors
@@ -590,6 +594,54 @@ class SQLiteResultWriter(BaseResultWriter):
         self._create_table(_DIAGNOSTICS_TABLE_NAME, _DIAGNOSTICS_TABLE_FIELDS)
         self._write_async_command(_DIAGNOSTICS_INDEX_COMMAND)
 
+    def _warn_no_arena_mask(self):
+        """Warn once that diagnostics fall back to whole-frame metrics."""
+        if not getattr(self, "_diagnostics_mask_warned", False):
+            self._diagnostics_mask_warned = True
+            logging.warning(
+                "Frame diagnostics: no usable ROI polygons; "
+                "falling back to whole-frame metrics."
+            )
+
+    def _get_arena_mask(self, frame_shape):
+        """
+        Return a full-frame binary mask covering the union of all ROI polygons.
+
+        The mask is built once with cv2.fillPoly over every ROI polygon and
+        cached until the frame shape changes. Returns None (and warns once)
+        when no usable ROIs are available, so callers fall back to
+        whole-frame metrics.
+
+        Args:
+            frame_shape: Shape of the current camera frame (np.ndarray.shape)
+
+        Returns:
+            uint8 mask of shape (h, w) with 255 inside the arenas, or None
+            when no ROI polygons are usable.
+        """
+        shape_key = (int(frame_shape[0]), int(frame_shape[1]))
+        if getattr(self, "_diagnostics_arena_mask_shape", None) == shape_key:
+            mask = getattr(self, "_diagnostics_arena_mask", None)
+            if mask is not None:
+                return mask
+
+        rois = getattr(self, "_rois", None) or []
+        polygons = [r.polygon for r in rois if getattr(r, "polygon", None) is not None]
+        if not polygons:
+            self._warn_no_arena_mask()
+            return None
+
+        mask = np.zeros(shape_key, dtype=np.uint8)
+        cv2.fillPoly(mask, polygons, 255)
+        if not np.count_nonzero(mask):
+            # e.g. polygons entirely outside the frame
+            self._warn_no_arena_mask()
+            return None
+
+        self._diagnostics_arena_mask = mask
+        self._diagnostics_arena_mask_shape = shape_key
+        return mask
+
     @staticmethod
     def _calculate_entropy(hist):
         """Calculate entropy of histogram for image complexity measure."""
@@ -597,16 +649,20 @@ class SQLiteResultWriter(BaseResultWriter):
         hist_norm = hist / np.sum(hist)
         return float(-np.sum(hist_norm * np.log2(hist_norm)))
 
-    def _analyze_frame_quality(self, image):
+    def _analyze_frame_quality(self, image, mask=None):
         """
         Compute per-frame image quality metrics for the 'diagnostic' table.
 
-        The calculations are identical to
+        When a mask is given, all statistics are restricted to the masked
+        (arena) pixels; otherwise they cover the whole frame. With mask=None
+        the calculations are identical to
         ethoscope.roi_builders.target_detection_diagnostics.TargetDetectionDiagnostics.analyze_image_quality
         (only the 'image_shape' entry is omitted).
 
         Args:
             image: Input frame (BGR or grayscale)
+            mask: Optional uint8 mask with the same (h, w) as the frame;
+                non-zero pixels are included in the statistics
 
         Returns:
             Dictionary with the 9 image quality metrics stored in the table
@@ -617,24 +673,39 @@ class SQLiteResultWriter(BaseResultWriter):
         else:
             gray = image.copy()
 
+        if mask is not None:
+            pixels = gray[mask > 0]
+            if pixels.size == 0:
+                # Degenerate mask (no arena pixels): use the whole frame
+                mask = None
+        if mask is None:
+            pixels = gray
+
         # Basic statistics
-        mean_brightness = float(np.mean(gray))
-        median_brightness = float(np.median(gray))
-        std_brightness = float(np.std(gray))
-        min_brightness = float(np.min(gray))
-        max_brightness = float(np.max(gray))
+        mean_brightness = float(np.mean(pixels))
+        median_brightness = float(np.median(pixels))
+        std_brightness = float(np.std(pixels))
+        min_brightness = float(np.min(pixels))
+        max_brightness = float(np.max(pixels))
 
         # Contrast measures
-        contrast_rms = float(np.sqrt(np.mean((gray - mean_brightness) ** 2)))
+        contrast_rms = float(np.sqrt(np.mean((pixels - mean_brightness) ** 2)))
         contrast_range = max_brightness - min_brightness
 
-        # Histogram analysis
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        # Histogram analysis (restricted to the mask when given)
+        hist = cv2.calcHist([gray], [0], mask, [256], [0, 256])
         hist_entropy = self._calculate_entropy(hist.flatten())
 
-        # Edge density (proxy for detail/noise)
+        # Edge density (proxy for detail/noise). Canny runs on the full
+        # grayscale frame to avoid fake edges at the mask boundary, but only
+        # edge pixels inside the mask are counted.
         edges = cv2.Canny(gray, 50, 150)
-        edge_density = float(np.sum(edges > 0) / edges.size)
+        if mask is not None:
+            edge_density = float(
+                np.sum((edges > 0) & (mask > 0)) / np.count_nonzero(mask)
+            )
+        else:
+            edge_density = float(np.sum(edges > 0) / edges.size)
 
         return {
             "mean_brightness": mean_brightness,
@@ -654,8 +725,10 @@ class SQLiteResultWriter(BaseResultWriter):
 
         Rows are written at most once per DIAGNOSTICS_PERIOD_SECONDS of
         experiment time (t is the experiment timestamp in milliseconds).
-        The stored 't' column is the wall-clock Unix timestamp in seconds,
-        like START_EVENTS and METADATA stop_date_time.
+        Metrics are computed over the union of the arena ROI polygons
+        (see _get_arena_mask); they cover the whole frame only when no
+        usable ROIs exist. The stored 't' column is the wall-clock Unix
+        timestamp in seconds, like START_EVENTS and METADATA stop_date_time.
 
         Args:
             t: Experiment timestamp in milliseconds
@@ -670,7 +743,8 @@ class SQLiteResultWriter(BaseResultWriter):
         self._diagnostics_last_tick = tick
 
         try:
-            metrics = self._analyze_frame_quality(img)
+            mask = self._get_arena_mask(img.shape)
+            metrics = self._analyze_frame_quality(img, mask=mask)
         except Exception:
             logging.error(
                 "Failed to compute frame diagnostics:\n%s" % traceback.format_exc()
@@ -729,9 +803,11 @@ class SQLiteResultWriter(BaseResultWriter):
             " range={contrast_range:.0f} ]"
             " entropy={histogram_entropy:.2f}"
             " edge_density={edge_density:.4f}"
+            " region=arenas"
         ).format(**metrics)
 
         fields = {
+            "REGION": "arenas",
             "MEAN_BRIGHTNESS": "{mean_brightness:.2f}".format(**metrics),
             "MEDIAN_BRIGHTNESS": "{median_brightness:.2f}".format(**metrics),
             "STD_BRIGHTNESS": "{std_brightness:.2f}".format(**metrics),
@@ -837,7 +913,7 @@ class SQLiteResultWriter(BaseResultWriter):
         - VAR_MAP: Variable type mappings
         - IMG_SNAPSHOTS: Image snapshot storage (if enabled)
         - CSV_DAM_ACTIVITY: DAM-compatible activity data (if enabled)
-        - diagnostic: per-frame image quality metrics (if enable_diagnostics)
+        - diagnostic: per-frame image quality metrics over the arena regions (if enable_diagnostics)
         - METADATA: Experimental metadata
         - START_EVENTS: Experiment start/stop events
 

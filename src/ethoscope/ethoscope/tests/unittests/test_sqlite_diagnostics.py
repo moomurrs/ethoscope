@@ -5,7 +5,8 @@ Tests cover:
 - Table creation only when enable_diagnostics is True (fresh and append flows)
 - Table absence when the toggle is disabled
 - Schema (columns/types) and timestamp index
-- Image quality calculations identical to TargetDetectionDiagnostics
+- Image quality calculations identical to TargetDetectionDiagnostics (mask=None path)
+- Arena-region metrics: union ROI mask, masked statistics, caching, no-ROI fallback
 - Throttled per-frame recording (DIAGNOSTICS_PERIOD_SECONDS)
 - Unix (wall-clock) timestamps
 - Retention limit in minutes (0 or less = keep forever)
@@ -175,7 +176,7 @@ class TestDiagnosticTable(unittest.TestCase):
     # ------------------------------------------------------------------ #
 
     def test_metrics_identical_to_target_detection_diagnostics(self):
-        """_analyze_frame_quality matches TargetDetectionDiagnostics exactly."""
+        """_analyze_frame_quality (mask=None) matches TargetDetectionDiagnostics."""
         tmp_logs = tempfile.mkdtemp(prefix="diag_logs_")
         try:
             reference = TargetDetectionDiagnostics(
@@ -204,6 +205,144 @@ class TestDiagnosticTable(unittest.TestCase):
             self._close_writer(writer)
         finally:
             shutil.rmtree(tmp_logs, ignore_errors=True)
+
+    # ------------------------------------------------------------------ #
+    # Arena-region masking
+    # ------------------------------------------------------------------ #
+
+    def test_masked_metrics_match_masked_pixels(self):
+        """With a mask, statistics cover only the masked (arena) pixels."""
+        writer = self._create_writer(erase_old_db=True, enable_diagnostics=True)
+
+        # 8x8 arena: 60 pixels at 100, 4 pixels at 200 -> mean 106.25
+        gray = np.zeros((12, 12), dtype=np.uint8)
+        gray[0:8, 0:8] = 100
+        gray[0, 0] = 200
+        gray[0, 1] = 200
+        gray[1, 0] = 200
+        gray[1, 1] = 200
+        mask = np.zeros((12, 12), dtype=np.uint8)
+        mask[0:8, 0:8] = 255
+
+        pixels = gray[mask > 0].astype(np.float64)
+        got = writer._analyze_frame_quality(gray, mask=mask)
+
+        self.assertAlmostEqual(got["mean_brightness"], float(pixels.mean()), places=9)
+        self.assertAlmostEqual(
+            got["median_brightness"], float(np.median(pixels)), places=9
+        )
+        self.assertAlmostEqual(got["std_brightness"], float(pixels.std()), places=9)
+        self.assertAlmostEqual(got["min_brightness"], 100.0, places=9)
+        self.assertAlmostEqual(got["max_brightness"], 200.0, places=9)
+        self.assertAlmostEqual(got["contrast_rms"], got["std_brightness"], places=9)
+        self.assertAlmostEqual(got["contrast_range"], 100.0, places=9)
+
+        # Two-value histogram: 60/64 at 100, 4/64 at 200
+        # (places=6: calcHist accumulates in float32)
+        p = np.array([60.0, 4.0]) / 64.0
+        expected_entropy = float(-np.sum(p * np.log2(p)))
+        self.assertAlmostEqual(
+            got["histogram_entropy"], expected_entropy, places=6
+        )
+
+        # Whole-frame metrics must differ (background dominates)
+        whole = writer._analyze_frame_quality(gray)
+        self.assertNotAlmostEqual(whole["mean_brightness"], got["mean_brightness"])
+        self._close_writer(writer)
+
+    def test_edge_density_counted_only_inside_mask(self):
+        """Edge pixels outside the arena mask are not counted."""
+        writer = self._create_writer(erase_old_db=True, enable_diagnostics=True)
+
+        # Strong vertical edge between columns 19 and 20
+        frame = np.zeros((20, 40), dtype=np.uint8)
+        frame[:, :20] = 250
+        # Mask covering only columns 0..15, far from the edge
+        mask = np.zeros((20, 40), dtype=np.uint8)
+        mask[:, :16] = 255
+
+        masked = writer._analyze_frame_quality(frame, mask=mask)
+        whole = writer._analyze_frame_quality(frame)
+
+        self.assertEqual(masked["edge_density"], 0.0)
+        self.assertGreater(whole["edge_density"], 0.0)
+        self._close_writer(writer)
+
+    def test_get_arena_mask_builds_union_of_roi_polygons(self):
+        """_get_arena_mask returns a full-frame mask of all ROI polygons."""
+        rois = [
+            ROI(polygon=((5, 5), (15, 5), (15, 15), (5, 15)), idx=1, value=1),
+            ROI(polygon=((30, 5), (40, 5), (40, 15), (30, 15)), idx=2, value=1),
+        ]
+        writer = self._create_writer(erase_old_db=True, rois=rois)
+
+        frame = np.zeros((20, 50, 3), dtype=np.uint8)
+        mask = writer._get_arena_mask(frame.shape)
+
+        self.assertEqual(mask.shape, (20, 50))
+        # Two 11x11 filled squares (fillPoly includes the boundary)
+        self.assertEqual(int(np.count_nonzero(mask)), 2 * 11 * 11)
+        self.assertEqual(int(mask[10, 10]), 255)
+        self.assertEqual(int(mask[10, 35]), 255)
+        self.assertEqual(int(mask[0, 0]), 0)
+        self._close_writer(writer)
+
+    def test_arena_mask_is_cached_until_shape_changes(self):
+        """The mask is rebuilt only when the frame shape changes."""
+        rois = [
+            ROI(polygon=((5, 5), (15, 5), (15, 15), (5, 15)), idx=1, value=1),
+        ]
+        writer = self._create_writer(erase_old_db=True, rois=rois)
+
+        frame = np.zeros((20, 50, 3), dtype=np.uint8)
+        first = writer._get_arena_mask(frame.shape)
+        second = writer._get_arena_mask(frame.shape)
+        self.assertIs(first, second)
+
+        other = writer._get_arena_mask((30, 50, 3))
+        self.assertIsNot(first, other)
+        self.assertEqual(other.shape, (30, 50))
+        self._close_writer(writer)
+
+    def test_no_rois_falls_back_to_whole_frame(self):
+        """Without usable ROIs, the mask is None and metrics cover the frame."""
+        writer = self._create_writer(erase_old_db=True, rois=[])
+
+        frame = np.full((20, 50, 3), 100, dtype=np.uint8)
+        mask = writer._get_arena_mask(frame.shape)
+        self.assertIsNone(mask)
+
+        got = writer._analyze_frame_quality(frame, mask=mask)
+        self.assertAlmostEqual(got["mean_brightness"], 100.0, places=9)
+        self._close_writer(writer)
+
+    def test_flush_records_arena_only_metrics(self):
+        """End-to-end: flush() stores metrics from the union of the ROIs."""
+        rois = [
+            ROI(polygon=((5, 5), (15, 5), (15, 15), (5, 15)), idx=1, value=1),
+            ROI(polygon=((30, 5), (40, 5), (40, 15), (30, 15)), idx=2, value=1),
+        ]
+        writer = self._create_writer(
+            erase_old_db=True, enable_diagnostics=True, rois=rois
+        )
+
+        frame = np.full((20, 50, 3), 200, dtype=np.uint8)
+        frame[5:16, 5:16] = 40  # arena 1
+        frame[5:16, 30:41] = 40  # arena 2
+        writer.flush(0, frame)
+        self._close_writer(writer)
+
+        rows = self._fetch_all(
+            "SELECT mean_brightness, min_brightness, max_brightness, "
+            "histogram_entropy FROM diagnostic"
+        )
+        self.assertEqual(len(rows), 1)
+        mean_b, min_b, max_b, entropy = rows[0]
+        # Arena pixels only: whole-frame mean would be ~182
+        self.assertAlmostEqual(mean_b, 40.0, places=6)
+        self.assertAlmostEqual(min_b, 40.0, places=6)
+        self.assertAlmostEqual(max_b, 40.0, places=6)
+        self.assertAlmostEqual(entropy, 0.0, places=6)
 
     # ------------------------------------------------------------------ #
     # Recording: throttling and timestamps
