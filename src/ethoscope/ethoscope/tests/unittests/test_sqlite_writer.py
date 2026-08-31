@@ -11,6 +11,7 @@ Tests SQLiteResultWriter and AsyncSQLiteWriter operations including:
 
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -780,6 +781,20 @@ class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
         }
 
     @staticmethod
+    def _journal_fields():
+        return {
+            "MEAN_BRIGHTNESS": "120.40",
+            "MEDIAN_BRIGHTNESS": "119.00",
+            "STD_BRIGHTNESS": "30.25",
+            "MIN_BRIGHTNESS": "5",
+            "MAX_BRIGHTNESS": "250",
+            "CONTRAST_RMS": "30.250",
+            "CONTRAST_RANGE": "245",
+            "HISTOGRAM_ENTROPY": "6.750",
+            "EDGE_DENSITY": "0.04500",
+        }
+
+    @staticmethod
     def _fake_journal(send_side_effect=None):
         fake_journal = Mock()
         fake_journal.LOG_INFO = 6
@@ -803,22 +818,24 @@ class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
         writer = self._create_result_writer(enable_diagnostics_journal=True)
         self.assertTrue(writer._enable_diagnostics_journal)
 
-    def test_log_diagnostics_sends_all_metrics_to_journal(self):
+    def test_send_to_journald_socket_sends_full_payload(self):
         writer = self._create_result_writer()
-        fake_systemd, fake_journal = self._fake_journal()
 
-        with patch.dict(
-            sys.modules,
-            {"systemd": fake_systemd, "systemd.journal": fake_journal},
-        ):
-            writer._log_diagnostics_to_journal(self._sample_metrics())
+        with patch("ethoscope.io.sqlite.socket.socket") as mock_socket_factory:
+            sock = mock_socket_factory.return_value
+            sock.__enter__.return_value = sock  # real sockets return self from __enter__
+            writer._send_to_journald_socket(
+                "frame_diagnostics test", self._journal_fields()
+            )
 
-        fake_journal.send.assert_called_once()
-        message = fake_journal.send.call_args[0][0]
-        self.assertIn("frame_diagnostics", message)
-        kwargs = fake_journal.send.call_args[1]
-        self.assertEqual(kwargs["SYSLOG_IDENTIFIER"], "ethoscope-diagnostics")
-        self.assertEqual(kwargs["PRIORITY"], 6)
+        mock_socket_factory.assert_called_once_with(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.sendto.assert_called_once()
+        payload, path = sock.sendto.call_args[0]
+        self.assertEqual(path, "/run/systemd/journal/socket")
+        lines = payload.decode("utf-8").split("\n")
+        self.assertIn("MESSAGE=frame_diagnostics test", lines)
+        self.assertIn("PRIORITY=6", lines)
+        self.assertIn("SYSLOG_IDENTIFIER=ethoscope-diagnostics", lines)
         for field in (
             "MEAN_BRIGHTNESS",
             "MEDIAN_BRIGHTNESS",
@@ -830,14 +847,50 @@ class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
             "HISTOGRAM_ENTROPY",
             "EDGE_DENSITY",
         ):
-            self.assertIn(field, kwargs)
+            self.assertTrue(any(line.startswith(field + "=") for line in lines))
 
-    def test_log_diagnostics_falls_back_to_logging_without_systemd(self):
+    def test_log_diagnostics_uses_journald_socket_first(self):
+        writer = self._create_result_writer()
+        fake_systemd, fake_journal = self._fake_journal()
+
+        with patch.dict(
+            sys.modules,
+            {"systemd": fake_systemd, "systemd.journal": fake_journal},
+        ), patch.object(writer, "_send_to_journald_socket") as mock_send:
+            writer._log_diagnostics_to_journal(self._sample_metrics())
+
+        mock_send.assert_called_once()
+        fake_journal.send.assert_not_called()
+
+    def test_log_diagnostics_falls_back_to_systemd_bindings_when_socket_fails(self):
+        writer = self._create_result_writer()
+        fake_systemd, fake_journal = self._fake_journal()
+
+        with patch.dict(
+            sys.modules,
+            {"systemd": fake_systemd, "systemd.journal": fake_journal},
+        ), patch.object(
+            writer,
+            "_send_to_journald_socket",
+            side_effect=OSError("no journal socket"),
+        ):
+            writer._log_diagnostics_to_journal(self._sample_metrics())
+
+        fake_journal.send.assert_called_once()
+        kwargs = fake_journal.send.call_args[1]
+        self.assertEqual(kwargs["SYSLOG_IDENTIFIER"], "ethoscope-diagnostics")
+        self.assertEqual(kwargs["PRIORITY"], 6)
+        self.assertIn("MEAN_BRIGHTNESS", kwargs)
+
+    def test_log_diagnostics_falls_back_to_logging_without_journal_socket(self):
         writer = self._create_result_writer()
 
-        with patch.dict(sys.modules, {"systemd": None, "systemd.journal": None}):
-            with self.assertLogs(level="INFO") as captured:
-                writer._log_diagnostics_to_journal(self._sample_metrics())
+        with patch.dict(sys.modules, {"systemd": None, "systemd.journal": None}), patch.object(
+            writer,
+            "_send_to_journald_socket",
+            side_effect=OSError("no journal socket"),
+        ), self.assertLogs(level="INFO") as captured:
+            writer._log_diagnostics_to_journal(self._sample_metrics())
 
         self.assertTrue(
             any("frame_diagnostics" in line for line in captured.output)
@@ -852,9 +905,12 @@ class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
         with patch.dict(
             sys.modules,
             {"systemd": fake_systemd, "systemd.journal": fake_journal},
-        ):
-            with self.assertLogs(level="DEBUG") as captured:
-                writer._log_diagnostics_to_journal(self._sample_metrics())
+        ), patch.object(
+            writer,
+            "_send_to_journald_socket",
+            side_effect=OSError("no journal socket"),
+        ), self.assertLogs(level="DEBUG") as captured:
+            writer._log_diagnostics_to_journal(self._sample_metrics())
 
         self.assertTrue(
             any("Failed to log diagnostics" in line for line in captured.output)

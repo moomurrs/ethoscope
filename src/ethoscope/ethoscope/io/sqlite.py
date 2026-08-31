@@ -1,6 +1,7 @@
 import importlib
 import logging
 import os
+import socket
 import sqlite3
 import time
 import traceback
@@ -45,6 +46,11 @@ _DIAGNOSTICS_INDEX_COMMAND = (
 # Journald identifier for the diagnostics journal mirror (filter with
 # 'journalctl -t ethoscope-diagnostics -f').
 _DIAGNOSTICS_JOURNAL_IDENTIFIER = "ethoscope-diagnostics"
+
+# Native journald datagram socket and priority (6 = journald LOG_INFO) used
+# by the diagnostics journal mirror.
+_JOURNALD_SOCKET_PATH = "/run/systemd/journal/socket"
+_JOURNALD_LOG_INFO = 6
 
 
 class AsyncSQLiteWriter(BaseAsyncSQLWriter):
@@ -697,14 +703,19 @@ class SQLiteResultWriter(BaseResultWriter):
         """
         Log one diagnostics sample to journald under a dedicated identifier.
 
-        Entries are sent with SYSLOG_IDENTIFIER set to
-        _DIAGNOSTICS_JOURNAL_IDENTIFIER so they can be monitored with
-        'journalctl -t ethoscope-diagnostics -f'. All metrics are included in
-        the message text and attached as structured fields (visible with
-        'journalctl -o verbose'). If the systemd python bindings are not
-        installed, falls back to standard logging, which still reaches the
-        journal when the device service runs under systemd. Journal failures
-        are logged at debug level and never propagate to the caller.
+        Entries carry SYSLOG_IDENTIFIER=_DIAGNOSTICS_JOURNAL_IDENTIFIER so
+        they can be monitored with 'journalctl -t ethoscope-diagnostics -f'.
+        All metrics are included in the message text and attached as
+        structured fields (visible with 'journalctl -o verbose').
+
+        Transports are tried in order:
+        1. The journald native datagram socket (_send_to_journald_socket).
+        2. The systemd python bindings (systemd.journal.send).
+        3. Standard logging, which still reaches the journal when the device
+           service runs under systemd (without the dedicated identifier).
+
+        Journal failures are logged at debug level and never propagate to
+        the caller.
         """
         message = (
             "frame_diagnostics"
@@ -719,12 +730,6 @@ class SQLiteResultWriter(BaseResultWriter):
             " edge_density={edge_density:.4f}"
         ).format(**metrics)
 
-        try:
-            journal = importlib.import_module("systemd.journal")
-        except ImportError:
-            logging.info(message)
-            return
-
         fields = {
             "MEAN_BRIGHTNESS": "{mean_brightness:.2f}".format(**metrics),
             "MEDIAN_BRIGHTNESS": "{median_brightness:.2f}".format(**metrics),
@@ -738,6 +743,18 @@ class SQLiteResultWriter(BaseResultWriter):
         }
 
         try:
+            self._send_to_journald_socket(message, fields)
+            return
+        except OSError:
+            pass
+
+        try:
+            journal = importlib.import_module("systemd.journal")
+        except ImportError:
+            logging.info(message)
+            return
+
+        try:
             journal.send(
                 message,
                 PRIORITY=journal.LOG_INFO,
@@ -748,6 +765,27 @@ class SQLiteResultWriter(BaseResultWriter):
             logging.debug(
                 "Failed to log diagnostics to journald:\n%s" % traceback.format_exc()
             )
+
+    def _send_to_journald_socket(self, message, fields):
+        """
+        Send one entry to journald via its native datagram socket.
+
+        Implements the minimal journald wire format: newline-separated
+        FIELD=value entries sent as a single datagram to
+        _JOURNALD_SOCKET_PATH. This is what systemd.journal.send does under
+        the hood, without requiring the python3-systemd package. All values
+        sent here are single-line, so the simple form is sufficient. Raises
+        OSError when the socket is unavailable (e.g. journald not running);
+        callers fall back to other transports.
+        """
+        entries = [
+            "MESSAGE=" + message,
+            "PRIORITY=%d" % _JOURNALD_LOG_INFO,
+            "SYSLOG_IDENTIFIER=" + _DIAGNOSTICS_JOURNAL_IDENTIFIER,
+        ]
+        entries.extend("%s=%s" % (name, value) for name, value in fields.items())
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.sendto("\n".join(entries).encode("utf-8"), _JOURNALD_SOCKET_PATH)
 
     def _enforce_diagnostics_retention(self):
         """
