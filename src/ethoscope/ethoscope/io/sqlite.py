@@ -718,14 +718,15 @@ class SQLiteResultWriter(BaseResultWriter):
         the caller.
         """
         message = (
-            "frame_diagnostics"
-            " brightness_mean={mean_brightness:.1f}"
-            " brightness_median={median_brightness:.1f}"
-            " brightness_std={std_brightness:.2f}"
-            " brightness_min={min_brightness:.0f}"
-            " brightness_max={max_brightness:.0f}"
-            " contrast_rms={contrast_rms:.2f}"
-            " contrast_range={contrast_range:.0f}"
+            "[BRIGHTNESS"
+            " mean={mean_brightness:.1f}"
+            " median={median_brightness:.1f}"
+            " std={std_brightness:.2f}"
+            " min={min_brightness:.0f}"
+            " max={max_brightness:.0f} ]"
+            " [CONTRAST"
+            " rms={contrast_rms:.2f}"
+            " range={contrast_range:.0f} ]"
             " entropy={histogram_entropy:.2f}"
             " edge_density={edge_density:.4f}"
         ).format(**metrics)
