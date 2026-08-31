@@ -12,6 +12,7 @@ Tests SQLiteResultWriter and AsyncSQLiteWriter operations including:
 import os
 import shutil
 import sqlite3
+import sys
 import tempfile
 import unittest
 from multiprocessing import Queue
@@ -724,6 +725,173 @@ class TestSQLiteResultWriterAddAndFlush(unittest.TestCase):
 
         # After close, insert dict should be empty
         self.assertEqual(writer._insert_dict[1], [])
+
+
+class TestSQLiteResultWriterDiagnosticsJournal(unittest.TestCase):
+    """Test the diagnostics journalctl mirror toggle and helper."""
+
+    def setUp(self):
+        self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        os.close(self.db_fd)
+        self.db_credentials = {"name": self.db_path}
+        self.rois = [
+            ROI(polygon=((0, 0), (100, 0), (100, 100), (0, 100)), idx=1, value=1),
+        ]
+        self.metadata = {"machine_name": "test"}
+        self.result_writers = []
+
+    def _create_result_writer(self, **kwargs):
+        args = {
+            "db_credentials": self.db_credentials,
+            "rois": self.rois,
+            "metadata": self.metadata,
+            "erase_old_db": False,
+        }
+        args.update(kwargs)
+        writer = SQLiteResultWriter(**args)
+        self.result_writers.append(writer)
+        return writer
+
+    def tearDown(self):
+        for writer in self.result_writers:
+            try:
+                if hasattr(writer, "_queue") and hasattr(writer, "_async_writer"):
+                    writer._queue.put("DONE")
+                    writer._queue.cancel_join_thread()
+                    if writer._async_writer.is_alive():
+                        writer._async_writer.join(timeout=2)
+            except Exception:
+                pass
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
+
+    @staticmethod
+    def _sample_metrics():
+        return {
+            "mean_brightness": 120.4,
+            "median_brightness": 119.0,
+            "std_brightness": 30.25,
+            "min_brightness": 5.0,
+            "max_brightness": 250.0,
+            "contrast_rms": 30.25,
+            "contrast_range": 245.0,
+            "histogram_entropy": 6.75,
+            "edge_density": 0.045,
+        }
+
+    @staticmethod
+    def _fake_journal(send_side_effect=None):
+        fake_journal = Mock()
+        fake_journal.LOG_INFO = 6
+        fake_journal.send.side_effect = send_side_effect
+        fake_systemd = Mock()
+        fake_systemd.journal = fake_journal
+        return fake_systemd, fake_journal
+
+    def test_description_includes_journal_toggle(self):
+        args = {a["name"]: a for a in SQLiteResultWriter._description["arguments"]}
+        self.assertIn("enable_diagnostics_journal", args)
+        toggle = args["enable_diagnostics_journal"]
+        self.assertEqual(toggle["type"], "boolean")
+        self.assertFalse(toggle["default"])
+        self.assertEqual(toggle["depends_on"], {"enable_diagnostics": [True]})
+
+    def test_init_stores_journal_flag(self):
+        writer = self._create_result_writer()
+        self.assertFalse(writer._enable_diagnostics_journal)
+
+        writer = self._create_result_writer(enable_diagnostics_journal=True)
+        self.assertTrue(writer._enable_diagnostics_journal)
+
+    def test_log_diagnostics_sends_all_metrics_to_journal(self):
+        writer = self._create_result_writer()
+        fake_systemd, fake_journal = self._fake_journal()
+
+        with patch.dict(
+            sys.modules,
+            {"systemd": fake_systemd, "systemd.journal": fake_journal},
+        ):
+            writer._log_diagnostics_to_journal(self._sample_metrics())
+
+        fake_journal.send.assert_called_once()
+        message = fake_journal.send.call_args[0][0]
+        self.assertIn("frame_diagnostics", message)
+        kwargs = fake_journal.send.call_args[1]
+        self.assertEqual(kwargs["SYSLOG_IDENTIFIER"], "ethoscope-diagnostics")
+        self.assertEqual(kwargs["PRIORITY"], 6)
+        for field in (
+            "MEAN_BRIGHTNESS",
+            "MEDIAN_BRIGHTNESS",
+            "STD_BRIGHTNESS",
+            "MIN_BRIGHTNESS",
+            "MAX_BRIGHTNESS",
+            "CONTRAST_RMS",
+            "CONTRAST_RANGE",
+            "HISTOGRAM_ENTROPY",
+            "EDGE_DENSITY",
+        ):
+            self.assertIn(field, kwargs)
+
+    def test_log_diagnostics_falls_back_to_logging_without_systemd(self):
+        writer = self._create_result_writer()
+
+        with patch.dict(sys.modules, {"systemd": None, "systemd.journal": None}):
+            with self.assertLogs(level="INFO") as captured:
+                writer._log_diagnostics_to_journal(self._sample_metrics())
+
+        self.assertTrue(
+            any("frame_diagnostics" in line for line in captured.output)
+        )
+
+    def test_log_diagnostics_swallows_journal_errors(self):
+        writer = self._create_result_writer()
+        fake_systemd, fake_journal = self._fake_journal(
+            send_side_effect=OSError("journald unavailable")
+        )
+
+        with patch.dict(
+            sys.modules,
+            {"systemd": fake_systemd, "systemd.journal": fake_journal},
+        ):
+            with self.assertLogs(level="DEBUG") as captured:
+                writer._log_diagnostics_to_journal(self._sample_metrics())
+
+        self.assertTrue(
+            any("Failed to log diagnostics" in line for line in captured.output)
+        )
+
+    def test_record_diagnostics_logs_to_journal_when_enabled(self):
+        writer = self._create_result_writer(enable_diagnostics_journal=True)
+
+        with patch.object(
+            writer, "_log_diagnostics_to_journal"
+        ) as mock_log, patch.object(
+            writer,
+            "_analyze_frame_quality",
+            return_value=self._sample_metrics(),
+        ), patch.object(
+            writer, "_write_async_command"
+        ):
+            writer._record_diagnostics(1000, object())
+            writer._record_diagnostics(1200, object())
+
+        mock_log.assert_called_once_with(self._sample_metrics())
+
+    def test_record_diagnostics_does_not_log_when_disabled(self):
+        writer = self._create_result_writer()
+
+        with patch.object(
+            writer, "_log_diagnostics_to_journal"
+        ) as mock_log, patch.object(
+            writer,
+            "_analyze_frame_quality",
+            return_value=self._sample_metrics(),
+        ), patch.object(
+            writer, "_write_async_command"
+        ):
+            writer._record_diagnostics(1000, object())
+
+        mock_log.assert_not_called()
 
 
 if __name__ == "__main__":

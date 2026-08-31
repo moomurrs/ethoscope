@@ -1,3 +1,4 @@
+import importlib
 import logging
 import os
 import sqlite3
@@ -40,6 +41,10 @@ _DIAGNOSTICS_INDEX_COMMAND = (
     f"CREATE INDEX IF NOT EXISTS idx_{_DIAGNOSTICS_TABLE_NAME}_t "
     f"ON {_DIAGNOSTICS_TABLE_NAME}(t)"
 )
+
+# Journald identifier for the diagnostics journal mirror (filter with
+# 'journalctl -t ethoscope-diagnostics -f').
+_DIAGNOSTICS_JOURNAL_IDENTIFIER = "ethoscope-diagnostics"
 
 
 class AsyncSQLiteWriter(BaseAsyncSQLWriter):
@@ -186,6 +191,13 @@ class SQLiteResultWriter(BaseResultWriter):
                 "default": 0,
                 "depends_on": {"enable_diagnostics": [True]},
             },
+            {
+                "name": "enable_diagnostics_journal",
+                "description": "Also log every diagnostics sample to journalctl with identifier 'ethoscope-diagnostics' (requires enable_diagnostics)",
+                "type": "boolean",
+                "default": False,
+                "depends_on": {"enable_diagnostics": [True]},
+            },
         ],
     }
 
@@ -204,6 +216,7 @@ class SQLiteResultWriter(BaseResultWriter):
         sensor=None,
         enable_diagnostics=False,
         diagnostics_retention_minutes=0,
+        enable_diagnostics_journal=False,
         *args,
         **kwargs,
     ):
@@ -219,11 +232,16 @@ class SQLiteResultWriter(BaseResultWriter):
             diagnostics_retention_minutes: Delete diagnostic rows older than this
                 many minutes. 0 or less means keep all rows forever. Only used
                 when enable_diagnostics is True.
+            enable_diagnostics_journal: When True, additionally log each
+                diagnostics sample to journald with identifier
+                'ethoscope-diagnostics' at the same DIAGNOSTICS_PERIOD_SECONDS
+                cadence. Requires enable_diagnostics to be True.
         """
         # Diagnostics configuration.
         # Must be set before super().__init__() because _create_all_tables()
         # (called during parent initialisation) reads these flags.
         self._enable_diagnostics = bool(enable_diagnostics)
+        self._enable_diagnostics_journal = bool(enable_diagnostics_journal)
         try:
             self._diagnostics_retention_minutes = int(diagnostics_retention_minutes)
         except (TypeError, ValueError):
@@ -636,6 +654,9 @@ class SQLiteResultWriter(BaseResultWriter):
         Args:
             t: Experiment timestamp in milliseconds
             img: Current camera frame (np.ndarray)
+
+        If the journal toggle is enabled, the same throttled sample is also
+        logged to journald (see _log_diagnostics_to_journal).
         """
         tick = int(round((int(t) / 1000.0) / self._diagnostics_period))
         if tick == self._diagnostics_last_tick:
@@ -668,7 +689,65 @@ class SQLiteResultWriter(BaseResultWriter):
             metrics["edge_density"],
         )
         self._write_async_command(command, args)
+        if getattr(self, "_enable_diagnostics_journal", False):
+            self._log_diagnostics_to_journal(metrics)
         self._enforce_diagnostics_retention()
+
+    def _log_diagnostics_to_journal(self, metrics):
+        """
+        Log one diagnostics sample to journald under a dedicated identifier.
+
+        Entries are sent with SYSLOG_IDENTIFIER set to
+        _DIAGNOSTICS_JOURNAL_IDENTIFIER so they can be monitored with
+        'journalctl -t ethoscope-diagnostics -f'. All metrics are included in
+        the message text and attached as structured fields (visible with
+        'journalctl -o verbose'). If the systemd python bindings are not
+        installed, falls back to standard logging, which still reaches the
+        journal when the device service runs under systemd. Journal failures
+        are logged at debug level and never propagate to the caller.
+        """
+        message = (
+            "frame_diagnostics"
+            " brightness_mean={mean_brightness:.1f}"
+            " brightness_median={median_brightness:.1f}"
+            " brightness_std={std_brightness:.2f}"
+            " brightness_min={min_brightness:.0f}"
+            " brightness_max={max_brightness:.0f}"
+            " contrast_rms={contrast_rms:.2f}"
+            " contrast_range={contrast_range:.0f}"
+            " entropy={histogram_entropy:.2f}"
+            " edge_density={edge_density:.4f}"
+        ).format(**metrics)
+
+        try:
+            journal = importlib.import_module("systemd.journal")
+        except ImportError:
+            logging.info(message)
+            return
+
+        fields = {
+            "MEAN_BRIGHTNESS": "{mean_brightness:.2f}".format(**metrics),
+            "MEDIAN_BRIGHTNESS": "{median_brightness:.2f}".format(**metrics),
+            "STD_BRIGHTNESS": "{std_brightness:.2f}".format(**metrics),
+            "MIN_BRIGHTNESS": "{min_brightness:.0f}".format(**metrics),
+            "MAX_BRIGHTNESS": "{max_brightness:.0f}".format(**metrics),
+            "CONTRAST_RMS": "{contrast_rms:.3f}".format(**metrics),
+            "CONTRAST_RANGE": "{contrast_range:.0f}".format(**metrics),
+            "HISTOGRAM_ENTROPY": "{histogram_entropy:.3f}".format(**metrics),
+            "EDGE_DENSITY": "{edge_density:.5f}".format(**metrics),
+        }
+
+        try:
+            journal.send(
+                message,
+                PRIORITY=journal.LOG_INFO,
+                SYSLOG_IDENTIFIER=_DIAGNOSTICS_JOURNAL_IDENTIFIER,
+                **fields,
+            )
+        except Exception:
+            logging.debug(
+                "Failed to log diagnostics to journald:\n%s" % traceback.format_exc()
+            )
 
     def _enforce_diagnostics_retention(self):
         """
