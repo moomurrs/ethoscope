@@ -290,12 +290,23 @@ class ROITemplate:
                         f"manual_rois[{i}].polygon[{j}] coordinates must be numbers"
                     )
 
-    def generate_rois(self, camera):
+    def generate_rois(
+        self,
+        camera,
+        enable_diagnostics: bool = False,
+        device_id: str = "unknown",
+        save_success_images: bool = False,
+        diagnostic_base_path: str | None = None,
+    ):
         """
         Generate ROIs based on template configuration.
 
         Args:
             camera: Camera instance to get dimensions and capture frames
+            enable_diagnostics: Enable target detection diagnostics (grid_with_targets only)
+            device_id: Identifier for the ethoscope device (used in diagnostic filenames)
+            save_success_images: Whether to also save images of successful detections
+            diagnostic_base_path: Base directory for storing diagnostic data
 
         Returns:
             For grid_with_targets: (reference_points, rois) tuple
@@ -304,7 +315,14 @@ class ROITemplate:
         roi_def = self.data["roi_definition"]
 
         if roi_def["type"] == "grid_with_targets":
-            return self._generate_grid_rois(camera, roi_def)
+            return self._generate_grid_rois(
+                camera,
+                roi_def,
+                enable_diagnostics=enable_diagnostics,
+                device_id=device_id,
+                save_success_images=save_success_images,
+                diagnostic_base_path=diagnostic_base_path,
+            )
         elif roi_def["type"] == "manual_polygons":
             return self._generate_manual_rois(camera, roi_def)
         elif roi_def["type"] == "image_mask":
@@ -312,7 +330,15 @@ class ROITemplate:
         else:
             raise ROITemplateValidationError(f"Unsupported ROI type: {roi_def['type']}")
 
-    def _generate_grid_rois(self, camera, roi_def: dict):
+    def _generate_grid_rois(
+        self,
+        camera,
+        roi_def: dict,
+        enable_diagnostics: bool = False,
+        device_id: str = "unknown",
+        save_success_images: bool = False,
+        diagnostic_base_path: str | None = None,
+    ):
         """Generate ROIs from grid template using target alignment."""
         from ethoscope.roi_builders.target_roi_builder import TargetGridROIBuilder
 
@@ -339,6 +365,10 @@ class ROITemplate:
             "right_margin": margins.get("right", -0.033),
             "horizontal_fill": fill_ratios.get("horizontal", 0.975),
             "vertical_fill": fill_ratios.get("vertical", 0.7),
+            "enable_diagnostics": enable_diagnostics,
+            "device_id": device_id,
+            "save_success_images": save_success_images,
+            "diagnostic_base_path": diagnostic_base_path,
         }
 
         # Use existing target-based ROI builder with template parameters

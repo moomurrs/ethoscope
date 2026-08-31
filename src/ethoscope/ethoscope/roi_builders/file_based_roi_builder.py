@@ -22,7 +22,26 @@ class FileBasedROIBuilder(BaseROIBuilder):
     that can be created, modified, and shared by users.
     """
 
-    _description = {}
+    _description = {
+        "overview": "ROI builder that loads configurations from external JSON "
+        "template files. For grid_with_targets templates, diagnostics can be "
+        "enabled to collect target detection samples.",
+        "arguments": [
+            {
+                "type": "boolean",
+                "name": "enable_diagnostics",
+                "description": "Enable diagnostics (saves images+JSON on failure)",
+                "default": False,
+            },
+            {
+                "type": "boolean",
+                "name": "save_success_images",
+                "description": "Also save successes (verbose)",
+                "default": False,
+                "depends_on": {"enable_diagnostics": [True]},
+            },
+        ],
+    }
 
     def __init__(
         self,
@@ -30,6 +49,10 @@ class FileBasedROIBuilder(BaseROIBuilder):
         template_name: str | None = "sleep_monitor_20tube",
         template_data: dict[str, Any] | None = None,
         template_id: str | None = None,
+        enable_diagnostics: bool = False,
+        device_id: str = "unknown",
+        save_success_images: bool = False,
+        diagnostic_base_path: str | None = None,
     ):
         """
         Initialize file-based ROI builder.
@@ -39,6 +62,12 @@ class FileBasedROIBuilder(BaseROIBuilder):
             template_name: Name of builtin template (defaults to sleep_monitor_20tube)
             template_data: Template data as dictionary (for programmatic use)
             template_id: MD5 ID of template (for template lookup by ID)
+            enable_diagnostics: Enable target detection diagnostics (only used by
+                grid_with_targets templates, saves images+JSON on failure)
+            device_id: Identifier for the ethoscope device (used in diagnostic filenames)
+            save_success_images: Whether to also save images of successful detections
+            diagnostic_base_path: Base directory for storing diagnostic data
+                (defaults to /ethoscope_data/various/target_detection_logs)
 
         Raises:
             ValueError: If no template source is provided or multiple sources are provided
@@ -70,6 +99,13 @@ class FileBasedROIBuilder(BaseROIBuilder):
             )
             self.template_data = None
             self.template_id = None
+
+        # Diagnostics configuration (forwarded to TargetGridROIBuilder for
+        # grid_with_targets templates, ignored otherwise)
+        self._enable_diagnostics = enable_diagnostics
+        self._device_id = device_id
+        self._save_success_images = save_success_images
+        self._diagnostic_base_path = diagnostic_base_path
 
         self.template = None
 
@@ -127,7 +163,13 @@ class FileBasedROIBuilder(BaseROIBuilder):
         try:
             # Generate ROIs and get reference points from template
             # For grid-based templates, this will detect the three target coordinates
-            result = self.template.generate_rois(camera)
+            result = self.template.generate_rois(
+                camera,
+                enable_diagnostics=self._enable_diagnostics,
+                device_id=self._device_id,
+                save_success_images=self._save_success_images,
+                diagnostic_base_path=self._diagnostic_base_path,
+            )
 
             if isinstance(result, tuple) and len(result) == 2:
                 # Template returned (reference_points, rois) - use these reference points
