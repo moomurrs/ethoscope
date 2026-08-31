@@ -4,8 +4,42 @@ import sqlite3
 import time
 import traceback
 
+import cv2
+import numpy as np
+
 from .base import BaseAsyncSQLWriter, BaseResultWriter
 from .helpers import Null
+
+# Throttle for per-frame diagnostics writes: at most one 'diagnostic' row is
+# recorded per this many seconds of experiment time (t is in milliseconds).
+# Change this constant to adjust the diagnostics sampling rate.
+DIAGNOSTICS_PERIOD_SECONDS = 1.0
+
+# Wall-clock seconds between retention sweeps (DELETE of expired diagnostics rows).
+DIAGNOSTICS_RETENTION_SWEEP_SECONDS = 60.0
+
+_DIAGNOSTICS_TABLE_NAME = "diagnostic"
+_DIAGNOSTICS_TABLE_FIELDS = (
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "t INTEGER, "
+    "mean_brightness REAL, "
+    "median_brightness REAL, "
+    "std_brightness REAL, "
+    "min_brightness REAL, "
+    "max_brightness REAL, "
+    "contrast_rms REAL, "
+    "contrast_range REAL, "
+    "histogram_entropy REAL, "
+    "edge_density REAL"
+)
+_DIAGNOSTICS_INSERT_COLUMNS = (
+    "t, mean_brightness, median_brightness, std_brightness, min_brightness, "
+    "max_brightness, contrast_rms, contrast_range, histogram_entropy, edge_density"
+)
+_DIAGNOSTICS_INDEX_COMMAND = (
+    f"CREATE INDEX IF NOT EXISTS idx_{_DIAGNOSTICS_TABLE_NAME}_t "
+    f"ON {_DIAGNOSTICS_TABLE_NAME}(t)"
+)
 
 
 class AsyncSQLiteWriter(BaseAsyncSQLWriter):
@@ -123,7 +157,7 @@ class SQLiteResultWriter(BaseResultWriter):
     """
 
     _description = {
-        "overview": "SQLite result writer - stores tracking data to local SQLite database file using consistent directory structure. Each experiment creates a unique file, preserving historical data. Compatible with rsync-based backups. Supports sensor data collection when sensors are available.",
+        "overview": "SQLite result writer - stores tracking data to local SQLite database file using consistent directory structure. Each experiment creates a unique file, preserving historical data. Compatible with rsync-based backups. Supports sensor data collection when sensors are available. Optionally records per-frame image quality metrics to a 'diagnostic' table when enable_diagnostics is turned on.",
         "arguments": [
             {
                 "name": "take_frame_shots",
@@ -136,6 +170,21 @@ class SQLiteResultWriter(BaseResultWriter):
                 "description": "Create DAM-compatible activity summary table",
                 "type": "boolean",
                 "default": True,
+            },
+            {
+                "name": "enable_diagnostics",
+                "description": "Record per-frame image quality diagnostics (brightness, contrast, entropy, edge density) to the 'diagnostic' table",
+                "type": "boolean",
+                "default": False,
+            },
+            {
+                "name": "diagnostics_retention_minutes",
+                "description": "Diagnostics retention limit in minutes: delete diagnostic rows older than this (0 = keep all)",
+                "type": "number",
+                "min": 0,
+                "step": 1,
+                "default": 0,
+                "depends_on": {"enable_diagnostics": [True]},
             },
         ],
     }
@@ -153,6 +202,8 @@ class SQLiteResultWriter(BaseResultWriter):
         take_frame_shots=False,
         erase_old_db=True,
         sensor=None,
+        enable_diagnostics=False,
+        diagnostics_retention_minutes=0,
         *args,
         **kwargs,
     ):
@@ -162,7 +213,25 @@ class SQLiteResultWriter(BaseResultWriter):
         Note: DAM-like tables are disabled by default for SQLite.
         Args:
             sensor: Optional sensor object for environmental data collection
+            enable_diagnostics: When True, record per-frame image quality metrics
+                to the 'diagnostic' table (throttled to DIAGNOSTICS_PERIOD_SECONDS).
+                When False, the 'diagnostic' table is not created at all.
+            diagnostics_retention_minutes: Delete diagnostic rows older than this
+                many minutes. 0 or less means keep all rows forever. Only used
+                when enable_diagnostics is True.
         """
+        # Diagnostics configuration.
+        # Must be set before super().__init__() because _create_all_tables()
+        # (called during parent initialisation) reads these flags.
+        self._enable_diagnostics = bool(enable_diagnostics)
+        try:
+            self._diagnostics_retention_minutes = int(diagnostics_retention_minutes)
+        except (TypeError, ValueError):
+            self._diagnostics_retention_minutes = 0
+        self._diagnostics_period = DIAGNOSTICS_PERIOD_SECONDS
+        self._diagnostics_last_tick = -1
+        self._diagnostics_last_retention_sweep = 0.0
+
         # SQLite-specific parameter overrides
         # Remove any conflicting arguments from kwargs to avoid duplicate argument errors
         kwargs.pop("erase_old_db", None)
@@ -456,6 +525,16 @@ class SQLiteResultWriter(BaseResultWriter):
 
         Overrides base class flush to handle list-based insert data with proper types.
         """
+        # Per-frame image quality diagnostics (throttled to DIAGNOSTICS_PERIOD_SECONDS)
+        # getattr guard: writers reconstructed via pickle/object.__new__ may predate
+        # this feature or bypass __init__
+        if (
+            getattr(self, "_enable_diagnostics", False)
+            and img is not None
+            and t is not None
+        ):
+            self._record_diagnostics(t, img)
+
         # Handle helper flushes (dam, shots, sensors) same as base class
         if self._dam_file_helper is not None:
             out = self._dam_file_helper.flush(t)
@@ -478,6 +557,142 @@ class SQLiteResultWriter(BaseResultWriter):
                     # Clear the list after flushing
                     self._insert_dict[roi_id] = []
         return False
+
+    def _create_diagnostics_table(self):
+        """Create the 'diagnostic' table and its timestamp index (idempotent)."""
+        logging.info(
+            "Creating '%s' table (frame diagnostics enabled)" % _DIAGNOSTICS_TABLE_NAME
+        )
+        self._create_table(_DIAGNOSTICS_TABLE_NAME, _DIAGNOSTICS_TABLE_FIELDS)
+        self._write_async_command(_DIAGNOSTICS_INDEX_COMMAND)
+
+    @staticmethod
+    def _calculate_entropy(hist):
+        """Calculate entropy of histogram for image complexity measure."""
+        hist = hist + 1e-10  # Avoid log(0)
+        hist_norm = hist / np.sum(hist)
+        return float(-np.sum(hist_norm * np.log2(hist_norm)))
+
+    def _analyze_frame_quality(self, image):
+        """
+        Compute per-frame image quality metrics for the 'diagnostic' table.
+
+        The calculations are identical to
+        ethoscope.roi_builders.target_detection_diagnostics.TargetDetectionDiagnostics.analyze_image_quality
+        (only the 'image_shape' entry is omitted).
+
+        Args:
+            image: Input frame (BGR or grayscale)
+
+        Returns:
+            Dictionary with the 9 image quality metrics stored in the table
+        """
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+
+        # Basic statistics
+        mean_brightness = float(np.mean(gray))
+        median_brightness = float(np.median(gray))
+        std_brightness = float(np.std(gray))
+        min_brightness = float(np.min(gray))
+        max_brightness = float(np.max(gray))
+
+        # Contrast measures
+        contrast_rms = float(np.sqrt(np.mean((gray - mean_brightness) ** 2)))
+        contrast_range = max_brightness - min_brightness
+
+        # Histogram analysis
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        hist_entropy = self._calculate_entropy(hist.flatten())
+
+        # Edge density (proxy for detail/noise)
+        edges = cv2.Canny(gray, 50, 150)
+        edge_density = float(np.sum(edges > 0) / edges.size)
+
+        return {
+            "mean_brightness": mean_brightness,
+            "median_brightness": median_brightness,
+            "std_brightness": std_brightness,
+            "min_brightness": min_brightness,
+            "max_brightness": max_brightness,
+            "contrast_rms": contrast_rms,
+            "contrast_range": contrast_range,
+            "histogram_entropy": hist_entropy,
+            "edge_density": edge_density,
+        }
+
+    def _record_diagnostics(self, t, img):
+        """
+        Record one throttled diagnostics row for the current frame.
+
+        Rows are written at most once per DIAGNOSTICS_PERIOD_SECONDS of
+        experiment time (t is the experiment timestamp in milliseconds).
+        The stored 't' column is the wall-clock Unix timestamp in seconds,
+        like START_EVENTS and METADATA stop_date_time.
+
+        Args:
+            t: Experiment timestamp in milliseconds
+            img: Current camera frame (np.ndarray)
+        """
+        tick = int(round((int(t) / 1000.0) / self._diagnostics_period))
+        if tick == self._diagnostics_last_tick:
+            return
+        self._diagnostics_last_tick = tick
+
+        try:
+            metrics = self._analyze_frame_quality(img)
+        except Exception:
+            logging.error(
+                "Failed to compute frame diagnostics:\n%s" % traceback.format_exc()
+            )
+            return
+
+        command = (
+            f"INSERT INTO {_DIAGNOSTICS_TABLE_NAME} "
+            f"({_DIAGNOSTICS_INSERT_COLUMNS}) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        args = (
+            int(time.time()),
+            metrics["mean_brightness"],
+            metrics["median_brightness"],
+            metrics["std_brightness"],
+            metrics["min_brightness"],
+            metrics["max_brightness"],
+            metrics["contrast_rms"],
+            metrics["contrast_range"],
+            metrics["histogram_entropy"],
+            metrics["edge_density"],
+        )
+        self._write_async_command(command, args)
+        self._enforce_diagnostics_retention()
+
+    def _enforce_diagnostics_retention(self):
+        """
+        Delete 'diagnostic' rows older than the retention limit.
+
+        Retention is expressed in minutes; 0 or less means keep all rows
+        forever. Sweeps are throttled to DIAGNOSTICS_RETENTION_SWEEP_SECONDS
+        of wall-clock time. The index on 't' keeps the DELETE cheap.
+        """
+        if self._diagnostics_retention_minutes <= 0:
+            return
+
+        now = time.time()
+        if (
+            now - self._diagnostics_last_retention_sweep
+            < DIAGNOSTICS_RETENTION_SWEEP_SECONDS
+        ):
+            return
+        self._diagnostics_last_retention_sweep = now
+
+        cutoff = int(now) - int(self._diagnostics_retention_minutes * 60)
+        self._write_async_command(
+            f"DELETE FROM {_DIAGNOSTICS_TABLE_NAME} WHERE t < ?", (cutoff,)
+        )
 
     def close(self):
         """
@@ -504,6 +719,7 @@ class SQLiteResultWriter(BaseResultWriter):
         - VAR_MAP: Variable type mappings
         - IMG_SNAPSHOTS: Image snapshot storage (if enabled)
         - CSV_DAM_ACTIVITY: DAM-compatible activity data (if enabled)
+        - diagnostic: per-frame image quality metrics (if enable_diagnostics)
         - METADATA: Experimental metadata
         - START_EVENTS: Experiment start/stop events
 
@@ -556,6 +772,9 @@ class SQLiteResultWriter(BaseResultWriter):
                 sqlite_fields = sqlite_fields.replace("SMALLINT", "INTEGER")
                 self._create_table("CSV_DAM_ACTIVITY", sqlite_fields)
 
+            if self._enable_diagnostics:
+                self._create_diagnostics_table()
+
             logging.info("Creating 'METADATA' table")
             self._create_table("METADATA", "field TEXT, value TEXT")
 
@@ -577,6 +796,11 @@ class SQLiteResultWriter(BaseResultWriter):
             event = "appending"
             command = "INSERT INTO START_EVENTS VALUES (?, ?, ?)"
             self._write_async_command(command, (None, int(time.time()), event))
+            if self._enable_diagnostics:
+                # CREATE TABLE IF NOT EXISTS is idempotent: this also covers
+                # databases created before this feature existed (or by runs
+                # with the diagnostics toggle off).
+                self._create_diagnostics_table()
             self._wait_for_queue_empty()
 
     def _insert_metadata(self):
