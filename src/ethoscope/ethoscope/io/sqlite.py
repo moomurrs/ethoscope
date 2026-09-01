@@ -803,7 +803,6 @@ class SQLiteResultWriter(BaseResultWriter):
             " range={contrast_range:.0f} ]"
             " entropy={histogram_entropy:.2f}"
             " edge_density={edge_density:.4f}"
-            " region=arenas"
         ).format(**metrics)
 
         fields = {
