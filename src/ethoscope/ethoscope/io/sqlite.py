@@ -797,10 +797,10 @@ class SQLiteResultWriter(BaseResultWriter):
             " median={median_brightness:.1f}"
             " std={std_brightness:.2f}"
             " min={min_brightness:.0f}"
-            " max={max_brightness:.0f} ]"
+            " max={max_brightness:.0f}]"
             " [CONTRAST"
             " rms={contrast_rms:.2f}"
-            " range={contrast_range:.0f} ]"
+            " range={contrast_range:.0f}]"
             " entropy={histogram_entropy:.2f}"
             " edge_density={edge_density:.4f}"
         ).format(**metrics)
