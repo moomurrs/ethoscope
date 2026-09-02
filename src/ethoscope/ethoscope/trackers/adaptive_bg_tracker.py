@@ -107,7 +107,7 @@ class ObjectModel:
         # Values chosen as ~0.5* typical std for each feature:
         # area log10 ~0.1, height ~1.0, mean_grey ~5.0. Prevents
         # likelihood explosion when ROI variance is naturally low.
-        _std_floor = np.array([0.10, 0.5, 3.0], dtype=np.float32)
+        _std_floor = np.array([0.2, 1.0, 4.0], dtype=np.float32)
         # align floor length to feature count for forward-compat
         if len(_std_floor) != len(stds):
             _std_floor = np.resize(_std_floor, stds.shape)
