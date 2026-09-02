@@ -226,6 +226,52 @@ def _get_effective_total_frames(
     return total if total > 0 else None
 
 
+def _get_effective_video_out_fps(
+    cam: Any,
+    drop_each: int | None,
+    video_out_fps: float | None = None,
+) -> float:
+    """Return the fps to use for the annotated output video.
+
+    Priority: explicit ``video_out_fps`` > auto-detected input fps
+    (``CAP_PROP_FPS`` from the underlying ``cv2.VideoCapture``, divided by
+    ``drop_each`` when > 1) > 25 (the ``BaseDrawer`` default). Reading the
+    real input fps keeps the annotated video in sync with real time (e.g. an
+    8 fps recording no longer plays back ~3x too fast).
+    """
+    if video_out_fps is not None:
+        if video_out_fps > 0:
+            return float(video_out_fps)
+        logger.warning(
+            "Invalid --video-fps %r (must be > 0); falling back to auto-detection",
+            video_out_fps,
+        )
+
+    fps = 0.0
+    if cv2 is not None:
+        try:
+            capture = getattr(cam, "capture", None)
+            if capture is not None:
+                fps = float(capture.get(cv2.CAP_PROP_FPS))
+        except Exception as e:
+            logger.warning("Could not read input video fps: %s", e)
+            fps = 0.0
+
+    if not math.isfinite(fps) or fps <= 0:
+        logger.warning(
+            "Input video fps unavailable/invalid (%r); annotated video will "
+            "use the BaseDrawer default (25 fps) and may not play back in "
+            "real time",
+            fps,
+        )
+        return 25.0
+
+    if drop_each is not None and drop_each > 1:
+        fps = fps / float(drop_each)
+
+    return fps
+
+
 _DEFAULT_ROI_TEMPLATE = "sleep_monitor_20tube"
 _DEFAULT_VIDEO_DIR = _PROJECT_ROOT / "ethoscope" / "tests" / "static_files" / "videos"
 _DEFAULT_OUTPUT_DIR = _PROJECT_ROOT / "output"
@@ -523,6 +569,7 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
     template_id: str | None = None,
     template_data: dict[str, Any] | None = None,
     output_video: str | Path | None = None,
+    video_out_fps: float | None = None,
     metadata: dict[str, Any] | None = None,
     metadata_json: str | None = None,
     metadata_file: str | Path | None = None,
@@ -576,6 +623,10 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
         output_video: When set, annotated tracking is written to this ``.avi``
             via ``DefaultDrawer``; otherwise ``NullDrawer`` is used (headless,
             faster, no GUI — recommended for rapid iteration).
+        video_out_fps: Frame rate for the annotated output video. ``None``
+            (default) auto-detects the input video's fps (``CAP_PROP_FPS``,
+            divided by ``drop_each`` when > 1) so playback is real time;
+            falls back to the ``BaseDrawer`` default (25) when detection fails.
         metadata: Dict of extra ``METADATA`` key/values (merged over defaults).
             Use for ``rethomics`` grouping (e.g. ``{"treatment":"drugA"}``).
         metadata_json: JSON object string merged over ``metadata``.
@@ -682,7 +733,11 @@ def run_offline_tracking(  # noqa: PLR0913, PLR0917, PLR0912, PLR0915
     if output_video is not None:
         out_vid = _resolve_output_path(Path(output_video))
         out_vid.parent.mkdir(parents=True, exist_ok=True)
-        drawer: Any = DefaultDrawer(video_out=str(out_vid), draw_frames=draw_frames)
+        drawer: Any = DefaultDrawer(
+            video_out=str(out_vid),
+            draw_frames=draw_frames,
+            video_out_fps=_get_effective_video_out_fps(cam, drop_each, video_out_fps),
+        )
     else:
         if draw_frames:
             logger.warning(
@@ -810,6 +865,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "Omit for headless NullDrawer.",
     )
     p.add_argument(
+        "--video-fps",
+        dest="video_out_fps",
+        type=float,
+        default=None,
+        help="Frame rate for the annotated output video (--video-out). "
+        "Default: auto-detect from the input video fps (divided by "
+        "--drop-each when set); falls back to 25 fps if detection fails.",
+    )
+    p.add_argument(
         "--draw-frames",
         action="store_true",
         help="Also pop up live tracking window (requires display; "
@@ -900,6 +964,7 @@ def main(argv: list[str] | None = None) -> int:
             template_file=args.template_file,
             template_id=args.template_id,
             output_video=args.output_video,
+            video_out_fps=args.video_out_fps,
             metadata_json=args.metadata_json,
             metadata_file=args.metadata_file,
             draw_frames=args.draw_frames,
