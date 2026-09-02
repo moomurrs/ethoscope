@@ -383,7 +383,6 @@ class AdaptiveBGModel(BaseTracker):
         self._buff_grey_blurred = None
         self._buff_fg = None
         self._buff_convolved_mask = None
-        self._buff_fg_backup = None
         self._buff_fg_diff = None
         self._old_sum_fg = 0
         self._buff_img = None  # cached pre-allocation, passed to others
@@ -537,7 +536,6 @@ class AdaptiveBGModel(BaseTracker):
             self._old_pos = 0.0 + 0.0j
 
             self._buff_object = np.empty_like(grey)
-            self._buff_fg_backup = np.empty_like(grey)
 
             raise NoPositionError
 
@@ -546,9 +544,6 @@ class AdaptiveBGModel(BaseTracker):
         cv2.threshold(
             self._buff_fg, self._fg_threshold, 255, cv2.THRESH_TOZERO, dst=self._buff_fg
         )
-
-        # Backup the foreground buffer for subsequent analysis.
-        np.copyto(self._buff_fg_backup, self._buff_fg)
 
         # Calculate the proportion of foreground pixels.
         prop_fg_pix = np.count_nonzero(self._buff_fg) / (grey.size)
@@ -744,9 +739,11 @@ class AdaptiveBGModel(BaseTracker):
 
     def _fit_and_adjust_ellipse(self, hull, grey):
         """
-        Fits an ellipse to the given contour (hull) and adjusts its dimensions and orientation.
-        Validates that the ellipse does not exceed the image dimensions. Draws the adjusted
-        ellipse on a foreground buffer and calculates its center of mass.
+        Fits an ellipse to the given contour (hull) and adjusts its dimensions and
+        orientation. Validates that the ellipse does not exceed the image dimensions.
+        Draws the inflated ellipse on the foreground buffer, where it widens the
+        region shielded from background adaptation during the next model update, and
+        returns the centroid of the hull itself.
 
         Parameters:
         - hull: numpy.ndarray
@@ -757,7 +754,7 @@ class AdaptiveBGModel(BaseTracker):
         Returns:
         - tuple: ((x, y), (w, h), angle)
             The center, dimensions, and orientation angle of the fitted and adjusted ellipse.
-            - (x, y): The center of mass of the area within the drawn ellipse.
+            - (x, y): The center of mass of the selected hull.
             - (w, h): The width and height of the ellipse.
             - angle: The orientation angle of the ellipse.
 
@@ -781,11 +778,7 @@ class AdaptiveBGModel(BaseTracker):
             self._buff_fg, ((x, y), (int(w * 1.5), int(h * 1.5)), angle), 255, -1
         )
 
-        # todo center mass just on the ellipse area
-        cv2.bitwise_and(self._buff_fg_backup, self._buff_fg, self._buff_fg_backup)
-
-        # Calculate all moments of the image array
-        M = cv2.moments(self._buff_fg_backup)
+        M = cv2.moments(hull)
 
         # m00 is the total area. We must check if it's zero to avoid a ZeroDivisionError
         # which will crash your script if a frame has no flies (a completely black mask).

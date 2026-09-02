@@ -12,14 +12,14 @@ import numpy as np
 import pytest
 
 try:
-    from ethoscope.trackers.adaptive_bg_tracker import ObjectModel
+    from ethoscope.trackers.adaptive_bg_tracker import AdaptiveBGModel, ObjectModel
 except ImportError:
     # Handle import for different test runner contexts
     import os
     import sys
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../.."))
-    from ethoscope.trackers.adaptive_bg_tracker import ObjectModel
+    from ethoscope.trackers.adaptive_bg_tracker import AdaptiveBGModel, ObjectModel
 
 
 class TestObjectModel:
@@ -154,6 +154,71 @@ class TestObjectModel:
         features2 = self.model.compute_features(img, contour)
 
         np.testing.assert_array_almost_equal(features1, features2)
+
+
+class TestFitAndAdjustEllipse:
+    """Position must come from the selected hull, not from all ROI foreground."""
+
+    _FLY_CENTER = (60, 100)
+    _FLY_AXES = (18, 9)
+    _FLY_GREY = 200
+    _BLOB_CENTER = (160, 100)
+    _BLOB_AXES = (25, 25)
+    _BLOB_GREY = 255
+    _N_BLOBS = 2
+    _FG_MARK = 255
+    _MIN_CONTOUR_AREA = 6
+
+    def setup_method(self):
+        self.tracker = AdaptiveBGModel(Mock())
+
+    def _make_frame_with_distant_blob(self):
+        """Fly-like blob on the left, larger brighter static blob on the right."""
+        img = np.zeros((200, 200), dtype=np.uint8)
+        cv2.ellipse(
+            img, self._FLY_CENTER, self._FLY_AXES, 0, 0, 360, self._FLY_GREY, -1
+        )
+        cv2.ellipse(
+            img, self._BLOB_CENTER, self._BLOB_AXES, 0, 0, 360, self._BLOB_GREY, -1
+        )
+        return img
+
+    def _fly_contour(self, img):
+        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [
+            cv2.approxPolyDP(c, 1.2, True)
+            for c in contours
+            if cv2.contourArea(c) >= self._MIN_CONTOUR_AREA
+        ]
+        assert len(contours) == self._N_BLOBS
+        return min(contours, key=lambda c: cv2.moments(c)["m10"])
+
+    def test_position_tracks_hull_not_whole_roi_foreground(self):
+        """The centroid must equal the hull's own centroid, ignoring other fg."""
+        img = self._make_frame_with_distant_blob()
+        hull = self._fly_contour(img)
+
+        self.tracker._buff_fg = img.copy()
+        (x, y), (w, h), _ = self.tracker._fit_and_adjust_ellipse(hull, img)
+
+        m = cv2.moments(hull)
+        np.testing.assert_allclose(x, m["m10"] / m["m00"], atol=1e-6)
+        np.testing.assert_allclose(y, m["m01"] / m["m00"], atol=1e-6)
+
+        (_, _), (mw, mh), _ = cv2.minAreaRect(hull)
+        assert (w, h) == (max(mw, mh), min(mw, mh))
+
+    def test_protection_ellipse_still_drawn_on_fg_buffer(self):
+        """The inflated ellipse must remain on _buff_fg for bg protection."""
+        img = self._make_frame_with_distant_blob()
+        hull = self._fly_contour(img)
+
+        fg = img.copy()
+        self.tracker._buff_fg = fg
+        self.tracker._fit_and_adjust_ellipse(hull, img)
+
+        cy, cx = self._FLY_CENTER[1], self._FLY_CENTER[0]
+        assert fg[cy, cx] == self._FG_MARK
 
 
 if __name__ == "__main__":
