@@ -713,6 +713,10 @@ class ControlThread(Thread):
             reference_points=reference_points,
             stimulators=stimulators,
             time_offset=time_offset,
+            # Forward the tracker arguments from the user options to the
+            # tracker instances (e.g. AdaptiveBGModel reads them from `data`).
+            # Previously tracker_kwargs were merged above but never passed on.
+            data=tracker_kwargs,
         )
 
         self._info["status"] = "running"

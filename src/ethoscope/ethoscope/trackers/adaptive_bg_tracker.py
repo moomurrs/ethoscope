@@ -33,7 +33,6 @@ class ObjectModel:
         self._features_header = [
             "fg_model_area",
             "fg_model_height",
-            # "fg_model_aspect_ratio",
             "fg_model_mean_grey",
         ]
 
@@ -178,29 +177,12 @@ class ObjectModel:
 
         (_, _), (width, height), angle = cv2.minAreaRect(contour)
         width, height = max(width, height), min(width, height)
-        # (height + 1) / (width + 1)
-        # todo speed should use time
-        #
-        # if len(self.positions) > 2:
-        #
-        #     pm, pmm = self._positions[-1],self._positions[-2]
-        #     xm, xmm = pm["x"], pmm["x"]
-        #     ym, ymm = pm["y"], pmm["y"]
-        #
-        #     instantaneous_speed = abs(xm + 1j*ym - xmm + 1j*ymm)
-        # else:
-        #     instantaneous_speed = 0
-        # if np.isnan(instantaneous_speed):
-        #     instantaneous_speed = 0
 
         features = np.array(
             [
                 log10(cv2.contourArea(contour) + 1.0),
                 height + 1,
-                # sqrt(ar),
-                # instantaneous_speed +1.0,
                 mean_col + 1,
-                # 1.0
             ]
         )
 
@@ -304,8 +286,34 @@ class BackgroundModel:
 
 class AdaptiveBGModel(BaseTracker):
     _description = {
-        "overview": "The default tracker for fruit flies. One animal per ROI.",
-        "arguments": [],
+        "overview": "The default tracker for fruit flies. One animal per ROI. "
+        "A time-normalised motion gate rejects detections that jump further "
+        "than physically plausible since the last detection.",
+        "arguments": [
+            {
+                "type": "number",
+                "min": 0.0,
+                "max": 20.0,
+                "step": 0.1,
+                "name": "max_speed",
+                "description": "Maximum plausible speed, in ROI main-axis lengths "
+                "per second. Detections jumping further than max_speed x "
+                "time-since-last-detection are rejected as identity errors. "
+                "0 disables the gate.",
+                "default": 1.0,
+            },
+            {
+                "type": "number",
+                "min": 100.0,
+                "max": 60000.0,
+                "step": 100.0,
+                "name": "motion_gate_max_dt",
+                "description": "Time window (ms) for the motion gate. After longer "
+                "gaps without a detection, the last position is too stale to gate "
+                "on, so the gate is lifted.",
+                "default": 5000,
+            },
+        ],
     }
 
     def __init__(self, roi, data=None):
@@ -328,11 +336,23 @@ class AdaptiveBGModel(BaseTracker):
                                      For HD videos with small flies, use smaller values like 0.01-0.02
             - 'max_area_factor': float (default: 5) - Maximum area multiplier for object detection.
                                 Larger values are more permissive for size variations
+            - 'max_speed': float (default: 1.0) - Maximum plausible speed in ROI
+                           main-axis lengths per second. Detections jumping further
+                           than max_speed x time-since-last-detection are rejected
+                           by the motion gate. 0 or negative disables the gate.
+            - 'motion_gate_max_dt': float (default: 5000.0) - Longest gap (ms)
+                                    the motion gate looks back over. Beyond this,
+                                    the last accepted position is too stale to
+                                    constrain detections.
 
         The method sets up internal buffers and default settings necessary for the operation of the tracking model, including
         object size expectations, smoothing mechanisms for mode detection, and initialization of both background and foreground models.
         """
         self._previous_shape = None
+        # Last accepted (non-rejected) position, in ROI-normalised complex
+        # coordinates, and its timestamp (ms). Anchor for the motion gate.
+        self._old_pos = 0.0 + 0.0j
+        self._old_pos_t = None
 
         # Configure object size expectations from data parameter (retro-compatible)
         if data is not None and isinstance(data, dict):
@@ -355,6 +375,14 @@ class AdaptiveBGModel(BaseTracker):
             # Clamp ready to history
             fg_ready = min(fg_ready, fg_history)
 
+            # Time-normalised motion gate: maximum plausible speed, expressed
+            # in ROI main-axis lengths per second (resolution independent).
+            # 0 or negative disables the gate.
+            self._max_speed = float(data.get("max_speed", 1.0))
+            # Longest gap (ms) the gate looks back over; beyond this the last
+            # accepted position is too stale to constrain the detection.
+            self._motion_gate_max_dt = float(data.get("motion_gate_max_dt", 5000.0))
+
             # Special mode: disable size filtering for detection analysis
             if data.get("disable_size_filtering", False):
                 self._object_expected_size = 0.001  # Very small - won't affect blur
@@ -365,6 +393,8 @@ class AdaptiveBGModel(BaseTracker):
             self._max_area = (5 * self._object_expected_size) ** 2
             self._fg_threshold = 20
             self._max_m_log_lik = 5.6
+            self._max_speed = 1.0
+            self._motion_gate_max_dt = 5000.0
             fg_history = 1000
             fg_ready = 50
 
@@ -544,6 +574,7 @@ class AdaptiveBGModel(BaseTracker):
         if self._bg_model.bg_img is None:
             self._buff_fg = np.empty_like(grey)
             self._old_pos = 0.0 + 0.0j
+            self._old_pos_t = None
 
             self._buff_object = np.empty_like(grey)
 
@@ -570,7 +601,7 @@ class AdaptiveBGModel(BaseTracker):
         ]
 
         # Process contours
-        hull, distance, is_ambiguous = self._process_contours(img, contours, t)
+        hull, distance, is_ambiguous = self._process_contours(img, grey, contours, t)
 
         if distance > self._max_m_log_lik:
             self._bg_model.increase_learning_rate()
@@ -602,6 +633,7 @@ class AdaptiveBGModel(BaseTracker):
         # xy_dist = round(log10(abs(pos - self._old_pos) + 1) * 1000)  # Add 1 to avoid log(0)
 
         self._old_pos = pos
+        self._old_pos_t = t
 
         # This can be use during offline tracking for debug purposes.
         # cv2.imshow(f"ROI_{self._roi.idx}", grey ); cv2.waitKey(1)
@@ -668,7 +700,45 @@ class AdaptiveBGModel(BaseTracker):
 
         self.fg_model.update(img, hull, t)
 
-    def _process_contours(self, img, contours, t):
+    def _motion_gate_allows(self, cx, cy, grey, t):
+        """
+        Time-normalised motion gate: does a candidate detection at pixel
+        coordinates (cx, cy) lie within plausible reach of the last accepted
+        position?
+
+        The reach is ``max_speed`` (ROI main-axis lengths per second) times
+        the time elapsed since the last accepted detection. Beyond
+        ``motion_gate_max_dt``, the last position is considered too stale to
+        constrain the detection, so the gate is lifted. The gate is also
+        inactive before the first accepted detection, on non-positive time
+        steps, and when ``max_speed`` is 0 or negative (kill switch).
+
+        Positions use the same normalisation as ``_track``: both axes divided
+        by the longest ROI image dimension.
+
+        Parameters:
+        - cx, cy: float
+            Candidate center in ROI image pixel coordinates.
+        - grey: numpy.ndarray
+            The ROI image the candidate was detected in (only its shape is
+            used, for normalisation).
+        - t: int or float
+            Current timestamp in ms.
+
+        Returns:
+        - bool: True when the candidate passes, or when the gate is inactive.
+        """
+        if self._max_speed <= 0 or self._old_pos_t is None:
+            return True
+        dt = float(t - self._old_pos_t)
+        if dt <= 0:
+            return True
+        dt = min(dt, float(self._motion_gate_max_dt))
+        max_disp = self._max_speed * dt / 1000.0
+        pos = (cx + 1.0j * cy) / max(grey.shape)
+        return bool(abs(pos - self._old_pos) <= max_disp)
+
+    def _process_contours(self, img, grey, contours, t):
         """
         Processes detected contours to identify the primary object for tracking, assesses the
         ambiguity of the detection, and calculates the distance moved by the tracked object based
@@ -679,6 +749,9 @@ class AdaptiveBGModel(BaseTracker):
         Parameters:
         - img: numpy.ndarray
             The current frame in its original color space, used for feature computation by the foreground model.
+        - grey: numpy.ndarray
+            The ROI image the contours were detected in, used to normalise
+            candidate positions for the motion gate.
         - contours: list of numpy.ndarray
             A list of contour arrays, where each contour is represented by an array of points.
         - t: int or float
@@ -698,7 +771,8 @@ class AdaptiveBGModel(BaseTracker):
         Raises:
         - NoPositionError
             If no valid contours are found, if the foreground model is not ready in ambiguous situations,
-            or if the identified primary contour does not meet minimum criteria for tracking.
+            if the identified primary contour does not meet minimum criteria for tracking,
+            or if no candidate passes the motion gate.
         """
 
         if not contours:
@@ -710,6 +784,22 @@ class AdaptiveBGModel(BaseTracker):
 
             if len(hulls) < 1:
                 raise NoPositionError
+
+            # Time-normalised motion gate: keep only candidates within
+            # plausible reach of the last accepted position. This protects
+            # the identity against debris, shadows or a second animal
+            # entering the ROI.
+            gated_hulls = []
+            for h in hulls:
+                (cx, cy), _, _ = cv2.minAreaRect(h)
+                if self._motion_gate_allows(cx, cy, grey, t):
+                    gated_hulls.append(h)
+            if len(gated_hulls) < 1:
+                # No plausible candidate: reject the frame rather than risk
+                # locking onto the wrong object. The caller infers the
+                # position from history.
+                raise NoPositionError
+            hulls = gated_hulls
 
             if not self.fg_model.is_ready:
                 # Warm-up: not enough FG history for reliable likelihood.
@@ -740,6 +830,13 @@ class AdaptiveBGModel(BaseTracker):
             hull = contours[0]
             if hull.shape[0] < 3:
                 self._bg_model.increase_learning_rate()
+                raise NoPositionError
+
+            (cx, cy), _, _ = cv2.minAreaRect(hull)
+            if not self._motion_gate_allows(cx, cy, grey, t):
+                # Implausible jump: reject without accelerating background
+                # adaptation, so a fast-moving animal is not erased into
+                # the background on a false gate violation.
                 raise NoPositionError
 
             features = self.fg_model.compute_features(img, hull)
