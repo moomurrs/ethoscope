@@ -389,6 +389,16 @@ class AdaptiveBGModel(BaseTracker):
 
         self._roi = roi
 
+        # Expected body length in pixels, used to size the centroid window in
+        # _fit_and_adjust_ellipse. Falls back to 0 (hull-sized window) when
+        # the ROI geometry is unavailable (e.g. mocked ROI in tests).
+        try:
+            self._expected_body_px = float(
+                self._object_expected_size * self._roi.longest_axis
+            )
+        except (AttributeError, TypeError, ValueError):
+            self._expected_body_px = 0.0
+
         super().__init__(roi, data)
 
     def _calculate_blur_radius(self, img_shape):
@@ -743,7 +753,7 @@ class AdaptiveBGModel(BaseTracker):
         orientation. Validates that the ellipse does not exceed the image dimensions.
         Draws the inflated ellipse on the foreground buffer, where it widens the
         region shielded from background adaptation during the next model update, and
-        returns the centroid of the hull itself.
+        returns the centroid of the foreground pixels around the hull.
 
         Parameters:
         - hull: numpy.ndarray
@@ -754,16 +764,19 @@ class AdaptiveBGModel(BaseTracker):
         Returns:
         - tuple: ((x, y), (w, h), angle)
             The center, dimensions, and orientation angle of the fitted and adjusted ellipse.
-            - (x, y): The center of mass of the selected hull.
+            - (x, y): The center of mass of the foreground pixels within one
+              expected body length of the selected hull (falls back to the hull
+              polygon centroid if no foreground pixels are found there).
             - (w, h): The width and height of the ellipse.
             - angle: The orientation angle of the ellipse.
 
         Raises:
         - NoPositionError:
-            If the fitted ellipse's dimensions exceed the dimensions of the input image.
+            If the fitted ellipse's dimensions exceed the dimensions of the input image,
+            or if no center of mass can be computed.
         """
 
-        (x, y), (w, h), angle = cv2.minAreaRect(hull)
+        (cx, cy), (w, h), angle = cv2.minAreaRect(hull)
 
         if w < h:
             angle -= 90
@@ -774,20 +787,68 @@ class AdaptiveBGModel(BaseTracker):
         if w > img_width or h > img_height:
             raise NoPositionError
 
+        # Center of mass from the actual foreground pixels around the hull --
+        # not from the hull polygon itself. `hull` is an approxPolyDP-decimated
+        # outline of a tiny, often pinched fg blob; its polygon centroid snaps
+        # between the front and back fragments whenever the mask of a still
+        # animal splits, while the pixel cloud stays put. The window reaches
+        # one expected body length so that a pinched-off fragment of the same
+        # animal still contributes, yet stays local so distant foreground
+        # (dirt, other ROIs) cannot drag the position. Must run BEFORE the
+        # shield ellipse below is drawn, since that fills _buff_fg with 255s.
+        # NOTE: intensity-weighted moments (binaryImage=False) match the
+        # pre-regression behavior: stronger foreground weighs more.
+        x, y = self._fg_pixel_centroid(hull)
+
         cv2.ellipse(
-            self._buff_fg, ((x, y), (int(w * 1.5), int(h * 1.5)), angle), 255, -1
+            self._buff_fg, ((cx, cy), (int(w * 1.5), int(h * 1.5)), angle), 255, -1
         )
 
-        M = cv2.moments(hull)
+        return (x, y), (w, h), angle
 
-        # m00 is the total area. We must check if it's zero to avoid a ZeroDivisionError
-        # which will crash your script if a frame has no flies (a completely black mask).
-        if M["m00"] != 0:
-            x = M["m10"] / M["m00"]
-            y = M["m01"] / M["m00"]
-        else:
+    def _fg_pixel_centroid(self, hull):
+        """
+        Computes the center of mass of the foreground pixels around `hull`.
+
+        Uses a window reaching one expected body length (or the hull's own
+        extent, whichever is larger), clipped to the foreground buffer, so a
+        pinched-off fragment of the same animal still contributes to the
+        position instead of teleporting it to one end of the animal.
+        Falls back to the hull polygon centroid when no foreground pixels
+        are available (e.g. uninitialised buffer in direct calls).
+
+        Parameters:
+        - hull: numpy.ndarray
+            The contour points of the detected object.
+
+        Returns:
+        - tuple: (x, y)
+            The center of mass in full-frame coordinates.
+
+        Raises:
+        - NoPositionError:
+            If neither the foreground pixels nor the hull polygon yield a
+            center of mass.
+        """
+        fg = self._buff_fg
+        if fg is not None:
+            fg_h, fg_w = fg.shape[:2]
+            x0, y0, bw, bh = cv2.boundingRect(hull)
+            half = max(float(max(bw, bh)), self._expected_body_px, 1.0)
+            cx0, cy0 = x0 + bw / 2.0, y0 + bh / 2.0
+            x1 = max(0, int(cx0 - half))
+            y1 = max(0, int(cy0 - half))
+            x2 = min(fg_w, int(cx0 + half) + 1)
+            y2 = min(fg_h, int(cy0 + half) + 1)
+            if x2 > x1 and y2 > y1:
+                m = cv2.moments(fg[y1:y2, x1:x2])
+                if m["m00"] != 0:
+                    return m["m10"] / m["m00"] + x1, m["m01"] / m["m00"] + y1
+
+        # Fallback: centroid of the hull polygon itself.
+        m = cv2.moments(hull)
+        if m["m00"] == 0:
             # failed to get center of mass
             logging.warning("Failed to get center of mass.")
             raise NoPositionError
-
-        return (x, y), (w, h), angle
+        return m["m10"] / m["m00"], m["m01"] / m["m00"]

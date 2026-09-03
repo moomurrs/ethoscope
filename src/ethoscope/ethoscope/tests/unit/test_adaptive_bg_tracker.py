@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 try:
+    from ethoscope.core.roi import ROI
     from ethoscope.trackers.adaptive_bg_tracker import AdaptiveBGModel, ObjectModel
 except ImportError:
     # Handle import for different test runner contexts
@@ -19,6 +20,7 @@ except ImportError:
     import sys
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../.."))
+    from ethoscope.core.roi import ROI
     from ethoscope.trackers.adaptive_bg_tracker import AdaptiveBGModel, ObjectModel
 
 
@@ -157,7 +159,11 @@ class TestObjectModel:
 
 
 class TestFitAndAdjustEllipse:
-    """Position must come from the selected hull, not from all ROI foreground."""
+    """Position must come from fg pixels near the selected hull.
+
+    Neither the hull polygon alone (snaps front/back when a still fly's mask
+    pinches into fragments) nor all ROI foreground (dragged by distant blobs).
+    """
 
     _FLY_CENTER = (60, 100)
     _FLY_AXES = (18, 9)
@@ -168,6 +174,8 @@ class TestFitAndAdjustEllipse:
     _N_BLOBS = 2
     _FG_MARK = 255
     _MIN_CONTOUR_AREA = 6
+    # Minimum hull-polygon jump proving the test setup actually pinches.
+    _MIN_POLYGON_JUMP_PX = 4.0
 
     def setup_method(self):
         self.tracker = AdaptiveBGModel(Mock())
@@ -193,20 +201,73 @@ class TestFitAndAdjustEllipse:
         assert len(contours) == self._N_BLOBS
         return min(contours, key=lambda c: cv2.moments(c)["m10"])
 
-    def test_position_tracks_hull_not_whole_roi_foreground(self):
-        """The centroid must equal the hull's own centroid, ignoring other fg."""
+    def test_position_tracks_local_fg_not_whole_roi_foreground(self):
+        """The centroid must follow fg pixels near the hull, ignoring other fg."""
         img = self._make_frame_with_distant_blob()
         hull = self._fly_contour(img)
 
         self.tracker._buff_fg = img.copy()
         (x, y), (w, h), _ = self.tracker._fit_and_adjust_ellipse(hull, img)
 
-        m = cv2.moments(hull)
-        np.testing.assert_allclose(x, m["m10"] / m["m00"], atol=1e-6)
-        np.testing.assert_allclose(y, m["m01"] / m["m00"], atol=1e-6)
+        # Near the fly (within its semi-axes), far from the distant blob:
+        # whole-ROI moments would sit between the two (~x=130).
+        assert abs(x - self._FLY_CENTER[0]) < self._FLY_AXES[0]
+        assert abs(y - self._FLY_CENTER[1]) < self._FLY_AXES[1]
+        assert abs(x - self._BLOB_CENTER[0]) > self._BLOB_AXES[0]
 
         (_, _), (mw, mh), _ = cv2.minAreaRect(hull)
         assert (w, h) == (max(mw, mh), min(mw, mh))
+
+    def test_position_stable_when_mask_pinches_into_fragments(self):
+        """Regression: a still fly's mask pinching into front/back fragments
+        must not teleport the centroid to the selected fragment."""
+        roi = ROI(polygon=((0, 0), (200, 0), (200, 200), (0, 200)), idx=0)
+        # Expected size ~ fly body proportion of the ROI, as in real setups.
+        tracker = AdaptiveBGModel(roi, data={"object_expected_size": 0.11})
+
+        def run(cut):
+            fg = np.zeros((200, 200), dtype=np.uint8)
+            cv2.ellipse(fg, (80, 100), (6, 2), 0, 0, 360, (45,), -1)
+            cv2.ellipse(fg, (91, 100), (5, 2), 0, 0, 360, (65,), -1)
+            cv2.line(fg, (85, 100), (87, 100), (30,), 1)
+            if cut:
+                fg[:, 86] = 0  # 1px pinch -> mask splits into two fragments
+            mask = fg.copy()
+            mask[mask > 0] = 255
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            contours = [
+                cv2.approxPolyDP(c, 1.2, True)
+                for c in contours
+                if cv2.contourArea(c) >= self._MIN_CONTOUR_AREA
+            ]
+            assert len(contours) == (2 if cut else 1)
+            hull = max(contours, key=cv2.contourArea)
+            tracker._buff_fg = fg.copy()
+            (x, y), _, _ = tracker._fit_and_adjust_ellipse(hull, fg)
+            m = cv2.moments(hull)
+            return (x, y), (m["m10"] / m["m00"], m["m01"] / m["m00"])
+
+        (x_conn, _), (px_conn, _) = run(cut=False)
+        (x_split, _), (px_split, _) = run(cut=True)
+
+        # The old hull-polygon centroid jumps half a body length...
+        assert abs(px_split - px_conn) > self._MIN_POLYGON_JUMP_PX
+        # ...while the reported position must stay close to the merged one.
+        assert abs(x_split - x_conn) < 0.5 * abs(px_split - px_conn)
+
+    def test_centroid_falls_back_to_hull_without_foreground(self):
+        """With no usable fg pixels, the hull polygon centroid is returned."""
+        img = self._make_frame_with_distant_blob()
+        hull = self._fly_contour(img)
+
+        self.tracker._buff_fg = np.zeros_like(img)
+        (x, y), _, _ = self.tracker._fit_and_adjust_ellipse(hull, img)
+
+        m = cv2.moments(hull)
+        np.testing.assert_allclose(x, m["m10"] / m["m00"], atol=1e-6)
+        np.testing.assert_allclose(y, m["m01"] / m["m00"], atol=1e-6)
 
     def test_protection_ellipse_still_drawn_on_fg_buffer(self):
         """The inflated ellipse must remain on _buff_fg for bg protection."""
