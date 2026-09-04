@@ -1,4 +1,5 @@
 import gc
+import importlib.metadata
 import importlib.util
 import logging
 import os
@@ -644,7 +645,7 @@ class PiFrameGrabber2(PiFrameGrabber):
             return
 
         logging.info(
-            f"Using picamera2 version: {getattr(Picamera2, '__version__', 'unknown')}"
+            f"Using picamera2 version: {importlib.metadata.version('picamera2')}"
         )
 
         Picamera2.set_logging(logging.ERROR)
