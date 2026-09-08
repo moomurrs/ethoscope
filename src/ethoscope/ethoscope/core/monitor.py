@@ -18,6 +18,7 @@ class Monitor:
         reference_points=None,
         stimulators=None,
         time_offset=0,
+        diagnostics_logger=None,
         *args,
         **kwargs,  # extra arguments for the tracker objects
     ):
@@ -44,6 +45,8 @@ class Monitor:
         :type stimulators: list(:class:`~ethoscope.stimulators.stimulators.BaseInteractor`)
         :param time_offset: The time offset in milliseconds to start the experiment from.
         :type time_offset: int
+        :param diagnostics_logger: Optional :class:`~ethoscope.utils.image_diagnostics.ImageDiagnosticsLogger`
+            used to periodically log image quality metrics to the system journal.
         :param args: additional arguments passed to the tracking algorithm
         :param kwargs: additional keyword arguments passed to the tracking algorithm
         """
@@ -56,6 +59,7 @@ class Monitor:
         self._last_time_stamp = self._time_offset
         self._is_running = False
         self._reference_points = reference_points
+        self._diagnostics_logger = diagnostics_logger
 
         if rois is None:
             raise NotImplementedError("rois must exist (cannot be None)")
@@ -135,8 +139,17 @@ class Monitor:
                 # Adjust timestamp for database writes when appending
                 t_with_offset = t + self._time_offset
 
+                # Collect per-ROI results for the optional diagnostics logger
+                diagnostics_tracked = (
+                    [] if self._diagnostics_logger is not None else None
+                )
+
                 for _j, track_u in enumerate(self._unit_trackers):
                     data_rows = track_u.track(t, frame)
+
+                    if diagnostics_tracked is not None:
+                        diagnostics_tracked.append((track_u.roi, data_rows))
+
                     if len(data_rows) == 0:
                         self._last_positions[track_u.roi.idx] = []
                         continue
@@ -148,6 +161,11 @@ class Monitor:
 
                     if result_writer is not None:
                         result_writer.write(t_with_offset, track_u.roi, data_rows)
+
+                if self._diagnostics_logger is not None:
+                    self._diagnostics_logger.maybe_log(
+                        t_with_offset, frame, diagnostics_tracked or [], frame_idx=i
+                    )
 
                 if result_writer is not None:
                     result_writer.flush(t_with_offset, frame)

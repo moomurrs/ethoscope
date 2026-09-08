@@ -56,6 +56,7 @@ from ethoscope.trackers.adaptive_bg_tracker import AdaptiveBGModel
 from ethoscope.utils import pi
 from ethoscope.utils.debug import EthoscopeException
 from ethoscope.utils.description import DescribedObject
+from ethoscope.utils.image_diagnostics import ImageDiagnosticsLogger
 
 
 class ExperimentalInformation(DescribedObject):
@@ -77,6 +78,12 @@ class ExperimentalInformation(DescribedObject):
                 "default": "",
                 "asknode": "incubators",
                 "required": "required",
+            },
+            {
+                "type": "boolean",
+                "name": "log_image_diagnostics",
+                "description": "Log image quality diagnostics to the system journal every 5 seconds",
+                "default": False,
             },
             {
                 "type": "str",
@@ -133,6 +140,7 @@ class ExperimentalInformation(DescribedObject):
         lights_off="",
         light_period_minutes=1440,
         light_cycle_anchor="",
+        log_image_diagnostics=False,
     ):
         self._check_code(code)
         self._info_dic = {
@@ -144,6 +152,7 @@ class ExperimentalInformation(DescribedObject):
             "lights_off": lights_off,
             "light_period_minutes": light_period_minutes,
             "light_cycle_anchor": light_cycle_anchor,
+            "log_image_diagnostics": bool(log_image_diagnostics),
         }
 
     def _check_code(self, code):
@@ -282,6 +291,7 @@ class ControlThread(Thread):
         self._monit_args = args
         self._monit_kwargs = kwargs
         self._metadata = None
+        self._diagnostics_logger = None
 
         # for FPS computation
         self._last_info_t_stamp = 0
@@ -713,6 +723,7 @@ class ControlThread(Thread):
             reference_points=reference_points,
             stimulators=stimulators,
             time_offset=time_offset,
+            diagnostics_logger=getattr(self, "_diagnostics_logger", None),
         )
 
         self._info["status"] = "running"
@@ -862,6 +873,19 @@ class ControlThread(Thread):
 
         # creates a unique tracking id to label this tracking run
         self._info["experimental_info"]["run_id"] = secrets.token_hex(8)
+
+        # Optional image quality diagnostics, toggled from the node UI
+        # (boolean "log_image_diagnostics" in the experiment info section)
+        self._diagnostics_logger = None
+        if self._info["experimental_info"].get("log_image_diagnostics"):
+            self._diagnostics_logger = ImageDiagnosticsLogger(
+                machine_id=self._info["id"],
+                machine_name=self._info["name"],
+                run_id=self._info["experimental_info"]["run_id"],
+            )
+            logging.info(
+                "Image diagnostics enabled: logging metrics to the journal every 5 s"
+            )
 
         if self._info["experimental_info"]["sensor"]:
             # if is URL:

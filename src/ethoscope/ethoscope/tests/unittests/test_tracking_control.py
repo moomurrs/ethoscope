@@ -42,6 +42,7 @@ class TestExperimentalInformation:
             "lights_off": "",
             "light_period_minutes": 1440,
             "light_cycle_anchor": "",
+            "log_image_diagnostics": False,
         }
 
     def test_with_values(self):
