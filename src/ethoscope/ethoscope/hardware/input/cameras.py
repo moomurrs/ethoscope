@@ -626,9 +626,170 @@ class PiFrameGrabber2(PiFrameGrabber):
         """
         Initialize PiFrameGrabber2 with configurable gain from system settings.
         """
-        # Get gain from system setting
+        # Get gain and AE lock settings from system settings
         self._gain = pi.get_gain_setting()
+        self._use_ae_lock = pi.get_ae_lock_setting()
+
+        # Brightness drift guard state: with locked exposure/gain the mean
+        # frame brightness is constant unless the illumination itself changes
+        # (e.g. lights toggling during LD cycles). After enough consecutive
+        # out-of-band checks, AE is re-converged and re-locked (see
+        # _check_brightness_drift).
+        self._brightness_check_interval = 15
+        self._brightness_drift_threshold = 30.0
+        self._brightness_drift_trigger = 5
+        self._locked_mean_brightness = None
+        self._frames_since_brightness_check = 0
+        self._drift_consecutive = 0
+
         super().__init__(*args, **kwargs)
+
+    def _compute_exposure_time(self):
+        """
+        Fixed exposure time used when AE is disabled or fails to converge.
+
+        The exposure is capped to 90% of the frame period: a longer exposure
+        would force libcamera to stretch the frame duration and the effective
+        FPS would silently drop below the requested one. 45000 us (45 ms) is
+        the historical default, achievable up to ~22 FPS.
+        """
+        frame_period_us = int(1e6 / self._target_fps)
+        return min(45000, int(0.9 * frame_period_us))
+
+    def _converge_and_lock_ae(self, capture, settle_timeout=3.0, poll_interval=0.2):
+        """
+        Let auto-exposure converge to the current illumination, then lock it.
+
+        Tracking needs frame-to-frame consistent exposure/gain: both the
+        adaptive background model and the mean-normalisation in the tracker
+        assume a stable image brightness. Free-running AE breaks that
+        assumption, but a fully fixed exposure cannot adapt between the light
+        and dark phases of an LD cycle. AE is therefore enabled briefly at
+        startup, and once ExposureTime and AnalogueGain stabilise, the
+        converged values are read back and locked for the rest of the run.
+
+        Args:
+            capture: an initialised, streaming Picamera2 instance
+            settle_timeout: max seconds to wait for AE convergence
+            poll_interval: seconds between convergence checks
+
+        Returns:
+            dict: the locked controls (or the fallback fixed values on timeout)
+        """
+        try:
+            capture.set_controls({"AeEnable": True})
+        except Exception as e:
+            logging.warning(f"Could not enable AE for convergence: {e}")
+
+        settle_start = time.time()
+        last_values = None
+        stable_count = 0
+
+        while time.time() - settle_start < settle_timeout:
+            time.sleep(poll_interval)
+            try:
+                metadata = capture.capture_metadata()
+            except Exception as e:
+                logging.debug(f"capture_metadata failed during AE convergence: {e}")
+                continue
+
+            if not isinstance(metadata, dict):
+                continue
+
+            exposure = metadata.get("ExposureTime")
+            analogue_gain = metadata.get("AnalogueGain")
+            digital_gain = metadata.get("DigitalGain")
+
+            if exposure is None or analogue_gain is None:
+                continue
+
+            values = (
+                int(exposure),
+                float(analogue_gain),
+                float(digital_gain) if digital_gain is not None else 1.0,
+            )
+
+            if values == last_values:
+                stable_count += 1
+            else:
+                stable_count = 0
+                last_values = values
+
+            if stable_count >= 3:
+                break
+
+        if last_values is None:
+            logging.warning(
+                f"AE did not converge within {settle_timeout}s, falling back to "
+                f"fixed exposure {self._compute_exposure_time()} us and gain {self._gain}"
+            )
+            controls = {
+                "AeEnable": False,
+                "ExposureTime": self._compute_exposure_time(),
+                "AnalogueGain": self._gain,
+            }
+        else:
+            controls = {
+                "AeEnable": False,
+                "ExposureTime": last_values[0],
+                "AnalogueGain": last_values[1],
+                "DigitalGain": last_values[2],
+            }
+            logging.info(
+                f"AE converged and locked: ExposureTime={controls['ExposureTime']}us, "
+                f"AnalogueGain={controls['AnalogueGain']}, "
+                f"DigitalGain={controls['DigitalGain']}"
+            )
+
+        try:
+            capture.set_controls(controls)
+        except Exception as e:
+            logging.error(f"Could not lock AE settings: {e}")
+
+        return controls
+
+    def _check_brightness_drift(self, capture, grey):
+        """
+        Periodically compare mean frame brightness against the locked value.
+
+        With locked exposure/gain, the mean brightness is constant as long as
+        the illumination is unchanged. After enough consecutive out-of-band
+        checks (i.e. the scene brightness has genuinely changed, such as the
+        lights toggling during an LD cycle), AE is re-converged and re-locked
+        to the new illumination. The tracking loop blocks for the duration of
+        the re-convergence (~1-3 s), which is acceptable on a light toggle.
+
+        Args:
+            capture: the streaming Picamera2 instance
+            grey: the Y plane of the current frame (2D numpy array)
+        """
+        self._frames_since_brightness_check += 1
+        if self._frames_since_brightness_check < self._brightness_check_interval:
+            return
+
+        self._frames_since_brightness_check = 0
+        mean_brightness = float(np.mean(grey))
+
+        if self._locked_mean_brightness is None:
+            self._locked_mean_brightness = mean_brightness
+            return
+
+        if (
+            abs(mean_brightness - self._locked_mean_brightness)
+            > self._brightness_drift_threshold
+        ):
+            self._drift_consecutive += 1
+        else:
+            self._drift_consecutive = 0
+
+        if self._drift_consecutive >= self._brightness_drift_trigger:
+            logging.warning(
+                f"Scene brightness drifted from {self._locked_mean_brightness:.1f} "
+                f"to {mean_brightness:.1f}; re-locking AE to the new illumination"
+            )
+            self._drift_consecutive = 0
+            self._locked_mean_brightness = None
+            self._converge_and_lock_ae(capture)
 
     def run(self):
         """
@@ -734,18 +895,25 @@ class PiFrameGrabber2(PiFrameGrabber):
                 )
 
                 # Configure camera controls optimized for tracking (prioritize exposure over gain)
+                # NoiseReductionMode off: temporal denoise smears moving animals into the
+                # background model and costs ISP bandwidth. Sharpness off: the tracker
+                # applies its own Gaussian blur, ISP sharpening only adds edge halos.
                 camera_controls = {
                     "FrameRate": self._target_fps,
-                    "ExposureTime": 45000,
                     "HdrMode": 0,
-                    "AnalogueGain": self._gain,  # Fixed gain to avoid tracking artifacts
+                    "NoiseReductionMode": 0,
+                    "Sharpness": 0,
                     "AwbEnable": False,  # Disable auto-white balance (NoIR cameras)
                     "AfMode": 0,  # Manual focus mode
                     "LensPosition": 8.5,  # Fixed focus position
-                    "AeEnable": False,
-                    # Prioritize exposure adjustments over gain to minimize noise artifacts
-                    # that interfere with background subtraction tracking algorithms
+                    "AeEnable": self._use_ae_lock,
                 }
+
+                if not self._use_ae_lock:
+                    # Fixed exposure/gain to avoid tracking artifacts; exposure is
+                    # capped by the frame period so the target FPS stays achievable
+                    camera_controls["ExposureTime"] = self._compute_exposure_time()
+                    camera_controls["AnalogueGain"] = self._gain
 
                 # Note: Automatic tuning detection allows libcamera to choose optimal settings
                 # for current illumination conditions (day/night, visible/IR light)
@@ -789,6 +957,8 @@ class PiFrameGrabber2(PiFrameGrabber):
                     preview_buffer = np.empty((target_h, target_w), dtype=np.uint8)
 
                     capture.start()
+                    if self._use_ae_lock:
+                        self._converge_and_lock_ae(capture)
                     capture.start_encoder(
                         encoder, self._get_video_chunk_filename(self._target_fps)
                     )
@@ -828,6 +998,9 @@ class PiFrameGrabber2(PiFrameGrabber):
                 else:
                     capture.start()
 
+                    if self._use_ae_lock:
+                        self._converge_and_lock_ae(capture)
+
                     while self._stop_queue.empty():
                         frame = capture.capture_array("main")
 
@@ -839,7 +1012,12 @@ class PiFrameGrabber2(PiFrameGrabber):
 
                         # Extract Y channel from YUV420 for grayscale
                         # ISP has already handled aspect ratio conversion and downscaling
-                        self._queue.put(frame[:target_h, :])
+                        grey = frame[:target_h, :]
+
+                        if self._use_ae_lock:
+                            self._check_brightness_drift(capture, grey)
+
+                        self._queue.put(grey)
 
                     logging.info(
                         "The stop queue is not empty. This signals it is time to stop acquiring frames"

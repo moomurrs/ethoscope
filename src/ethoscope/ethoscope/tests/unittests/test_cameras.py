@@ -33,6 +33,7 @@ from ethoscope.hardware.input.cameras import (
     PiFrameGrabber2,
     V4L2Camera,
 )
+from ethoscope.utils import pi
 from ethoscope.utils.debug import EthoscopeException
 
 TEST_VIDEO = str(
@@ -412,8 +413,11 @@ class TestPiFrameGrabber:
 
 
 class TestPiFrameGrabber2:
-    def _make_grabber(self):
-        with patch.object(cameras.pi, "get_gain_setting", return_value=1.0):
+    def _make_grabber(self, ae_lock=True):
+        with (
+            patch.object(cameras.pi, "get_gain_setting", return_value=1.0),
+            patch.object(cameras.pi, "get_ae_lock_setting", return_value=ae_lock),
+        ):
             grabber = PiFrameGrabber2(
                 target_fps=10,
                 target_resolution=(640, 480),
@@ -421,6 +425,10 @@ class TestPiFrameGrabber2:
                 stop_queue=queue.Queue(),
             )
         return grabber
+
+    def test_init_reads_ae_lock_setting(self):
+        assert self._make_grabber(ae_lock=True)._use_ae_lock is True
+        assert self._make_grabber(ae_lock=False)._use_ae_lock is False
 
     def test_run_puts_none_with_automatic_tuning(self):
         grabber = self._make_grabber()
@@ -433,6 +441,184 @@ class TestPiFrameGrabber2:
         with patch.object(cameras.pi, "get_noir_setting", return_value=True):
             grabber.run()
         assert grabber._queue.get() is None
+
+
+class TestExposureCap:
+    @pytest.mark.parametrize(
+        ("fps", "expected"),
+        [
+            (30, 29999),  # capped at 90% of the frame period (int floor)
+            (25, 36000),  # capped at 90% of the frame period
+            (15, 45000),  # historical default still fits
+            (10, 45000),  # historical default
+            (5, 45000),  # historical default
+        ],
+    )
+    def test_compute_exposure_time(self, fps, expected):
+        grabber = object.__new__(PiFrameGrabber2)
+        grabber._target_fps = fps
+        assert grabber._compute_exposure_time() == expected
+
+
+class TestConvergeAndLockAE:
+    def _bare_grabber(self, target_fps=15, gain=1.0):
+        grabber = object.__new__(PiFrameGrabber2)
+        grabber._target_fps = target_fps
+        grabber._gain = gain
+        return grabber
+
+    def test_locks_stable_converged_values(self):
+        grabber = self._bare_grabber()
+        capture = Mock()
+        capture.capture_metadata.return_value = {
+            "ExposureTime": 38000,
+            "AnalogueGain": 4.0,
+            "DigitalGain": 1.0,
+        }
+
+        controls = grabber._converge_and_lock_ae(
+            capture, settle_timeout=1.0, poll_interval=0.01
+        )
+
+        assert controls == {
+            "AeEnable": False,
+            "ExposureTime": 38000,
+            "AnalogueGain": 4.0,
+            "DigitalGain": 1.0,
+        }
+        capture.set_controls.assert_called_with(controls)
+
+    def test_defaults_digital_gain_when_absent(self):
+        grabber = self._bare_grabber()
+        capture = Mock()
+        capture.capture_metadata.return_value = {
+            "ExposureTime": 38000,
+            "AnalogueGain": 4.0,
+        }
+
+        controls = grabber._converge_and_lock_ae(
+            capture, settle_timeout=1.0, poll_interval=0.01
+        )
+
+        assert controls["DigitalGain"] == 1.0
+
+    def test_falls_back_to_fixed_values_on_timeout(self):
+        grabber = self._bare_grabber(target_fps=15, gain=2.0)
+        capture = Mock()
+        capture.capture_metadata.return_value = {
+            "AnalogueGain": 3.0  # ExposureTime missing: never converges
+        }
+
+        controls = grabber._converge_and_lock_ae(
+            capture, settle_timeout=0.05, poll_interval=0.005
+        )
+
+        assert controls == {
+            "AeEnable": False,
+            "ExposureTime": 45000,
+            "AnalogueGain": 2.0,
+        }
+
+    def test_metadata_errors_do_not_crash(self):
+        grabber = self._bare_grabber()
+        capture = Mock()
+        capture.capture_metadata.side_effect = RuntimeError("no request")
+
+        controls = grabber._converge_and_lock_ae(
+            capture, settle_timeout=0.05, poll_interval=0.005
+        )
+
+        assert controls["ExposureTime"] == grabber._compute_exposure_time()
+
+
+class TestBrightnessDriftGuard:
+    def _bare_grabber(self):
+        grabber = object.__new__(PiFrameGrabber2)
+        grabber._target_fps = 15
+        grabber._gain = 1.0
+        grabber._brightness_check_interval = 1
+        grabber._brightness_drift_threshold = 30.0
+        grabber._brightness_drift_trigger = 3
+        grabber._locked_mean_brightness = None
+        grabber._frames_since_brightness_check = 0
+        grabber._drift_consecutive = 0
+        return grabber
+
+    def test_first_check_initializes_reference_without_relock(self):
+        grabber = self._bare_grabber()
+        capture = Mock()
+        grey = np.full((10, 10), 100, np.uint8)
+
+        with patch.object(PiFrameGrabber2, "_converge_and_lock_ae") as mock_relock:
+            grabber._check_brightness_drift(capture, grey)
+
+        assert grabber._locked_mean_brightness == 100.0
+        mock_relock.assert_not_called()
+
+    def test_skips_frames_until_check_interval(self):
+        grabber = self._bare_grabber()
+        grabber._brightness_check_interval = 15
+        grabber._locked_mean_brightness = 100.0
+        capture = Mock()
+        bright = np.full((10, 10), 200, np.uint8)
+
+        with patch.object(PiFrameGrabber2, "_converge_and_lock_ae") as mock_relock:
+            for _ in range(14):
+                grabber._check_brightness_drift(capture, bright)
+
+        # checks deferred: no drift accumulated yet, no re-lock
+        assert grabber._drift_consecutive == 0
+        assert grabber._frames_since_brightness_check == 14
+        mock_relock.assert_not_called()
+
+    def test_transient_changes_do_not_relock(self):
+        grabber = self._bare_grabber()
+        capture = Mock()
+        dark = np.full((10, 10), 100, np.uint8)
+        bright = np.full((10, 10), 200, np.uint8)
+
+        with patch.object(PiFrameGrabber2, "_converge_and_lock_ae") as mock_relock:
+            grabber._check_brightness_drift(capture, dark)
+            grabber._check_brightness_drift(capture, bright)
+            grabber._check_brightness_drift(capture, dark)
+
+        mock_relock.assert_not_called()
+        assert grabber._locked_mean_brightness == 100.0
+
+    def test_persistent_change_relocks(self):
+        grabber = self._bare_grabber()
+        capture = Mock()
+        dark = np.full((10, 10), 100, np.uint8)
+        bright = np.full((10, 10), 200, np.uint8)
+
+        with patch.object(PiFrameGrabber2, "_converge_and_lock_ae") as mock_relock:
+            grabber._check_brightness_drift(capture, dark)
+            for _ in range(3):
+                grabber._check_brightness_drift(capture, bright)
+
+        mock_relock.assert_called_once_with(capture)
+        assert grabber._locked_mean_brightness is None
+        assert grabber._drift_consecutive == 0
+
+
+class TestAELockSetting:
+    def test_default_enabled_when_file_missing(self, tmp_path):
+        assert pi.get_ae_lock_setting(path=str(tmp_path / "missing")) is True
+
+    def test_set_and_get_roundtrip(self, tmp_path):
+        path = str(tmp_path / "ae_lock_setting")
+        pi.set_ae_lock_setting(False, path=path)
+        assert pi.get_ae_lock_setting(path=path) is False
+
+        pi.set_ae_lock_setting(True, path=path)
+        assert pi.get_ae_lock_setting(path=path) is True
+
+    def test_accepts_string_values(self, tmp_path):
+        path = tmp_path / "ae_lock_setting"
+        path.write_text("0")
+        assert pi.get_ae_lock_setting(path=str(path)) is False
+        path.write_text("yes")
+        assert pi.get_ae_lock_setting(path=str(path)) is True
 
 
 # ===========================================================================

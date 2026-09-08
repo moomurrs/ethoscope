@@ -1590,3 +1590,53 @@ def set_gain_setting(gain, path="/etc/ethoscope/gain_setting"):
     except Exception as e:
         logging.error(f"Error setting gain preference to {path}: {e}")
         raise
+
+
+def get_ae_lock_setting(path="/etc/ethoscope/ae_lock_setting"):
+    """
+    Reads the AE (auto-exposure) lock setting for the camera.
+
+    When True, the camera runs auto-exposure briefly at startup to adapt to
+    the current illumination (day/night phase), then locks the converged
+    exposure/gain so that frame brightness stays consistent for
+    background-subtraction tracking. If the scene brightness drifts
+    persistently afterwards (e.g. lights toggling during LD cycles), AE is
+    re-converged and re-locked automatically.
+
+    Args:
+        path (str): Path to the configuration file
+
+    Returns:
+        bool: True if AE converge-then-lock is enabled (default), False for
+              fully fixed exposure/gain
+    """
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                content = f.read().strip().lower()
+                return content in ["true", "1", "yes"]
+        return True  # Default value: AE converge-then-lock enabled
+    except Exception as e:
+        logging.warning(f"Error reading AE lock setting from {path}: {e}")
+        return True
+
+
+def set_ae_lock_setting(use_ae_lock, path="/etc/ethoscope/ae_lock_setting"):
+    """
+    Sets the AE lock preference for the camera.
+
+    Args:
+        use_ae_lock (bool): True to enable AE converge-then-lock, False for
+                            fully fixed exposure/gain
+        path (str): Path to the configuration file
+    """
+    try:
+        ensure_dir_exists(path)
+
+        with open(path, "w") as f:
+            f.write("true" if use_ae_lock else "false")
+
+        logging.info(f"AE lock setting updated: use_ae_lock={use_ae_lock}")
+    except Exception as e:
+        logging.error(f"Error setting AE lock preference to {path}: {e}")
+        raise
