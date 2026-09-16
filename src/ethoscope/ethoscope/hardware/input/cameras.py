@@ -736,13 +736,12 @@ class PiFrameGrabber2(PiFrameGrabber):
                 # Configure camera controls optimized for tracking (prioritize exposure over gain)
                 camera_controls = {
                     "FrameRate": self._target_fps,
-                    "ExposureTime": 45000,
+                    "ExposureTime": 0,
                     "HdrMode": 0,
                     "AnalogueGain": self._gain,  # Fixed gain to avoid tracking artifacts
                     "AwbEnable": False,  # Disable auto-white balance (NoIR cameras)
                     "AfMode": 0,  # Manual focus mode
-                    "LensPosition": 8.5,  # Fixed focus position
-                    "AeEnable": False,
+                    "LensPosition": 8.0,  # Fixed focus position
                     # Prioritize exposure adjustments over gain to minimize noise artifacts
                     # that interfere with background subtraction tracking algorithms
                 }
@@ -761,7 +760,10 @@ class PiFrameGrabber2(PiFrameGrabber):
                 capture.configure(config)
                 logging.info("Camera configured successfully")
 
-                # Log camera status for debugging
+                # Explicitly configure exposure/gain after configuration (libcamera 0.5.0 compatible)
+                capture.set_controls({"ExposureTime": 0, "AnalogueGain": self._gain})
+
+                # Log auto-exposure status for debugging
                 try:
                     exposure_time = capture.camera_controls.get(
                         "ExposureTime", "Unknown"
@@ -770,7 +772,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                         "AnalogueGain", "Unknown"
                     )
                     logging.info(
-                        f"Camera control status - ExposureTime: {exposure_time}, AnalogueGain: {analogue_gain}"
+                        f"Auto-exposure status - ExposureTime: {exposure_time}, AnalogueGain: {analogue_gain}"
                     )
                 except Exception as e:
                     logging.warning(f"Could not check auto-exposure status: {e}")
@@ -785,9 +787,6 @@ class PiFrameGrabber2(PiFrameGrabber):
                     self._video_time = time.time()
                     self._refresh_interval = time.time()
 
-                    # Create one single buffer for previews (Zero GC bloat)
-                    preview_buffer = np.empty((target_h, target_w), dtype=np.uint8)
-
                     capture.start()
                     capture.start_encoder(
                         encoder, self._get_video_chunk_filename(self._target_fps)
@@ -800,9 +799,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                         ):
                             request = capture.capture_request()
                             with MappedArray(request, "main") as frame:
-                                # Overwrite the single buffer and send it to the queue
-                                np.copyto(preview_buffer, frame.array[:target_h, :])
-                                self._queue.put(preview_buffer)
+                                self._queue.put(frame.array[:target_h, :])
                             request.release()
                             self._refresh_interval = time.time()
 
