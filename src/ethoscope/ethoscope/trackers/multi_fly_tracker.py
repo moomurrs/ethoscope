@@ -324,7 +324,7 @@ class MultiFlyTracker(BaseTracker):
         fg_img[:] = filtered_img
 
         logging.debug(
-            f"Applied enhanced morphological filtering: opening({opening_kernel_size}), closing({closing_kernel_size}), removed {num_labels - 1 - np.count_nonzero(np.unique(filtered_img)) + 1} large components"
+            f"Applied enhanced morphological filtering: opening({opening_kernel_size}), closing({closing_kernel_size}), removed {num_labels-1-np.count_nonzero(np.unique(filtered_img))+1} large components"
         )
 
         return fg_img

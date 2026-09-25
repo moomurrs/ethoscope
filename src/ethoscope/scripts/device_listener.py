@@ -251,6 +251,7 @@ class commandingThread(threading.Thread):
 
 
 if __name__ == "__main__":
+
     parser = OptionParser()
     parser.add_option(
         "-r",
@@ -290,13 +291,10 @@ if __name__ == "__main__":
     (options, args) = parser.parse_args()
     option_dict = vars(options)
 
-    level = logging.DEBUG if option_dict["debug"] else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        force=True,
-    )
-    logging.info("Device Listener beginning...")
+    if option_dict["debug"]:
+        logging.basicConfig()
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.info("Logging using DEBUG SETTINGS")
 
     if option_dict["json"]:
         with open(option_dict["json"]) as f:
@@ -331,6 +329,7 @@ if __name__ == "__main__":
     logging.info("Ethoscope controlling server started and listening")
 
     if option_dict["run"] or pi.was_interrupted():
+
         if option_dict["record_video"]:
             ethoscope.action("start_record")
         else:

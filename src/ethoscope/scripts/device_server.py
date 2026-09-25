@@ -353,6 +353,7 @@ def controls(id, action):
         return info(id)
 
     elif action in ["stop", "close", "poweroff", "reboot", "restart"]:
+
         send_command("stop")
 
         if action == "close":
@@ -528,7 +529,10 @@ def get_machine_info(id):
 
     machine_info["Module"] = interfaces.getModuleCapabilities(shallow=True)
 
-    machine_info["has_light_hardware"] = pi.has_light_hardware()
+    try:
+        machine_info["has_light_hardware"] = pi.has_light_hardware()
+    except Exception:
+        machine_info["has_light_hardware"] = False
 
     return machine_info
 
@@ -617,9 +621,8 @@ def info(id):
     _, response_time = send_command(action="status", return_timing=True)
 
     # Read light schedule state
-    light_hw = pi.has_light_hardware()
     light_info = {
-        "hardware": light_hw,
+        "hardware": False,
         "active": False,
         "lights_on": "",
         "lights_off": "",
@@ -627,34 +630,39 @@ def info(id):
         "anchor": None,
         "led_on": False,
     }
-    if light_hw:
-        try:
-            light_config = "/run/ethoscope/light_schedule.json"
-            if os.path.exists(light_config):
-                with open(light_config) as f:
-                    light_data = json.load(f)
-                light_info["active"] = light_data.get("active", False)
-                light_info["lights_on"] = light_data.get("lights_on", "")
-                light_info["lights_off"] = light_data.get("lights_off", "")
-                light_info["period_minutes"] = light_data.get("period_minutes", 1440)
-                light_info["anchor"] = light_data.get("anchor")
-                if (
-                    light_info["active"]
-                    and light_info["lights_on"]
-                    and light_info["lights_off"]
-                ):
-                    from ethoscope.hardware.interfaces.light_daemon import (
-                        LightController,
-                    )
+    try:
+        # Check if the light daemon service is running
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "ethoscope_light.service"],
+            capture_output=True,
+            timeout=3,
+        )
+        light_info["hardware"] = result.returncode == 0
 
-                    light_info["led_on"] = LightController.should_light_be_on(
-                        light_info["lights_on"],
-                        light_info["lights_off"],
-                        period_minutes=light_info["period_minutes"],
-                        anchor=light_info["anchor"],
-                    )
-        except Exception as e:
-            logging.debug("Could not read light schedule: %s", e)
+        light_config = "/run/ethoscope/light_schedule.json"
+        if os.path.exists(light_config):
+            with open(light_config) as f:
+                light_data = json.load(f)
+            light_info["active"] = light_data.get("active", False)
+            light_info["lights_on"] = light_data.get("lights_on", "")
+            light_info["lights_off"] = light_data.get("lights_off", "")
+            light_info["period_minutes"] = light_data.get("period_minutes", 1440)
+            light_info["anchor"] = light_data.get("anchor")
+            if (
+                light_info["active"]
+                and light_info["lights_on"]
+                and light_info["lights_off"]
+            ):
+                from ethoscope.hardware.interfaces.light_daemon import LightController
+
+                light_info["led_on"] = LightController.should_light_be_on(
+                    light_info["lights_on"],
+                    light_info["lights_off"],
+                    period_minutes=light_info["period_minutes"],
+                    anchor=light_info["anchor"],
+                )
+    except Exception as e:
+        logging.debug("Could not read light schedule: %s", e)
 
     runninginfo.update(
         {
@@ -1048,6 +1056,7 @@ def get_ip_address(interface_name=None):
 
 
 if __name__ == "__main__":
+
     parser = OptionParser()
     parser.add_option("-p", "--port", dest="port", default=9000, help="port")
     parser.add_option(
@@ -1065,22 +1074,14 @@ if __name__ == "__main__":
     PORT = option_dict["port"]
     DEBUG = option_dict["debug"]
 
-    level = logging.DEBUG if DEBUG else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        force=True,
-    )
-    logging.info("Device Server beginning...")
+    if DEBUG:
+        logging.basicConfig()
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.info("Logging using DEBUG SETTINGS")
 
     _MACHINE_ID = pi.get_machine_id()
     _MACHINE_NAME = pi.get_machine_name()
     _GIT_VERSION = pi.get_git_version()
-
-    # Prime the light-hardware cache once at startup. has_light_hardware()
-    # performs a single `systemctl is-enabled` subprocess call and caches the
-    # result for the rest of the process lifetime.
-    pi.has_light_hardware()
 
     _ETHOSCOPE_DIR = "/ethoscope_data"
     _ETHOSCOPE_UPLOAD = os.path.join(_ETHOSCOPE_DIR, "upload")
@@ -1121,6 +1122,7 @@ if __name__ == "__main__":
 
         # tries for one minute or until an IP ip_address is obtained
         while ip_address is None and ip_attempts < 60:
+
             try:
                 ip_address = get_ip_address()
             except Exception:

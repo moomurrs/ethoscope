@@ -42,8 +42,6 @@ class BaseDrawer:
             cv2.namedWindow(self._live_window_name, cv2.WINDOW_AUTOSIZE)
 
         self._last_drawn_frame = None
-        self._annotate_interval = 1.0
-        self._last_annotate_time = 0.0
 
     def _annotate_frame(self, img, positions, tracking_units):
         """
@@ -77,27 +75,8 @@ class BaseDrawer:
         :return:
         """
 
-        needs_full_rate = self._draw_frames or self._video_out is not None
-
-        if not needs_full_rate:
-            now = time.monotonic()
-            if now - self._last_annotate_time < self._annotate_interval:
-                return
-            self._last_annotate_time = now
-
-        # Check if pre-allocated buffer exists and has the same dimension/type
-        if (
-            self._last_drawn_frame is None
-            or self._last_drawn_frame.shape[:2] != img.shape[:2]
-            or self._last_drawn_frame.dtype != img.dtype
-        ):
-            # Doesn't exist, create contiguous pre-allocation
-            self._last_drawn_frame = np.empty(
-                (img.shape[0], img.shape[1], 3), dtype=img.dtype
-            )
-
-        # In-place GRAY->BGR into the reused buffer to avoid per-frame allocation.
-        cv2.cvtColor(img, cv2.COLOR_GRAY2BGR, dst=self._last_drawn_frame)
+        # self._last_drawn_frame = img.copy()
+        self._last_drawn_frame = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
         self._annotate_frame(
             self._last_drawn_frame, positions, tracking_units, reference_points
@@ -166,15 +145,25 @@ class DefaultDrawer(BaseDrawer):
         """
 
         try:
-            # ROI is immutable after tracking start - use cached bounding
-            # rectangle computed once at ROI creation (core/roi.py:38) instead
-            # of recomputing max/min over polygon points every frame.
+            # Position indicator in top-right corner of ROI
             x, y = roi.offset
-            try:
-                _, _, roi_width, roi_height = roi.rectangle
-                roi_width = max(roi_width, 50)
-                roi_height = max(roi_height, 50)
-            except Exception:
+            roi_points = roi.polygon
+
+            # More robust ROI width calculation with safety checks
+            if len(roi_points) > 0:
+                try:
+                    x_coords = [p[0] for p in roi_points]
+                    y_coords = [p[1] for p in roi_points]
+                    roi_width = max(x_coords) - min(x_coords)
+                    roi_height = max(y_coords) - min(y_coords)
+
+                    # Ensure minimum size
+                    roi_width = max(roi_width, 50)
+                    roi_height = max(roi_height, 50)
+                except (TypeError, IndexError, ValueError):
+                    roi_width = 100  # Fallback
+                    roi_height = 100
+            else:
                 roi_width = 100  # Fallback
                 roi_height = 100
 
@@ -268,6 +257,7 @@ class DefaultDrawer(BaseDrawer):
             pass
 
         for track_u in tracking_units:
+
             # Debug logging for each tracking unit (log once per stimulator type)
             stimulator_type = type(track_u.stimulator).__name__
             log_key = f"stimulator_type_{track_u.roi.idx}"

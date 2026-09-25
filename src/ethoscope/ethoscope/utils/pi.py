@@ -14,12 +14,6 @@ from ethoscope.utils.rpi_bad_power import powerChecker
 
 PERSISTENT_STATE = "/var/cache/ethoscope/persistent_state.pkl"
 
-# Module-level caches — computed once on first call and never again
-# during the lifetime of the process (i.e. once per ethoscope software start).
-_CACHED_PI_VERSION = None
-_CACHED_PI_CAMERA_VERSION = None
-_CACHED_HAS_LIGHT_HARDWARE = None
-
 
 def ensure_dir_exists(file_path):
     """
@@ -44,11 +38,7 @@ def pi_version():
     PI 3 Raspberry Pi 3 Model B Rev 1.2
     PI 4 Raspberry Pi 4 Model B Rev 1.5
 
-    Result is cached at module level after the first call (once per process).
     """
-    global _CACHED_PI_VERSION
-    if _CACHED_PI_VERSION is not None:
-        return _CACHED_PI_VERSION
 
     try:
         with open("/sys/firmware/devicetree/base/model") as file:
@@ -63,12 +53,10 @@ def pi_version():
             model_type = None
 
         # Return the information as a dictionary
-        _CACHED_PI_VERSION = {"model_number": model_number, "model_type": model_type}
-        return _CACHED_PI_VERSION
+        return {"model_number": model_number, "model_type": model_type}
 
     except Exception:
-        _CACHED_PI_VERSION = {"model_number": 0, "model_type": None}
-        return _CACHED_PI_VERSION
+        return {"model_number": 0, "model_type": None}
         # return {'error': str(e)}
 
 
@@ -694,12 +682,7 @@ def getPiCameraVersion():
         Pi with camera: {'IFD0.Model': 'RP_imx219', 'IFD0.Make': 'RaspberryPi', 'version': 'PINoIR 2', 'sensor': 'imx219'}
         New ethoscope: "This is a new ethoscope. Run tracking once to detect the camera module"
         No camera: "No camera hardware detected - video capabilities disabled"
-
-    Result is cached at module level after the first call (once per process).
     """
-    global _CACHED_PI_CAMERA_VERSION
-    if _CACHED_PI_CAMERA_VERSION is not None:
-        return _CACHED_PI_CAMERA_VERSION
 
     known_versions = {
         "RP_ov5647": "PINoIR 1",
@@ -737,30 +720,24 @@ def getPiCameraVersion():
                 if "version" not in camera_info and sensor_name in sensor_to_version:
                     camera_info["version"] = sensor_to_version[sensor_name]
 
-            _CACHED_PI_CAMERA_VERSION = camera_info
-            return _CACHED_PI_CAMERA_VERSION
+            return camera_info
 
         except Exception:
             # Fallback: try to provide sensor info even without cache file
             sensor_name = _get_camera_sensor_info()
             if sensor_name and sensor_name in sensor_to_version:
-                _CACHED_PI_CAMERA_VERSION = {
+                return {
                     "sensor": sensor_name,
                     "version": sensor_to_version[sensor_name],
                     "detected_via": "filesystem",
                 }
-                return _CACHED_PI_CAMERA_VERSION
 
-            _CACHED_PI_CAMERA_VERSION = (
+            return (
                 "This is a new ethoscope. Run tracking once to detect the camera module"
             )
-            return _CACHED_PI_CAMERA_VERSION
 
     else:
-        _CACHED_PI_CAMERA_VERSION = (
-            "No camera hardware detected - video capabilities disabled"
-        )
-        return _CACHED_PI_CAMERA_VERSION
+        return "No camera hardware detected - video capabilities disabled"
 
 
 def isSuperscope():
@@ -809,80 +786,47 @@ def isExperimental(new_value=None):
         logging.warning(f"Removed file {filename}. The machine is not experimental.")
 
 
-def has_light_hardware(new_value=None, _force_refresh=False):
+def has_light_hardware(new_value=None):
     """
     Get or set whether this ethoscope has LED light hardware connected.
-
-    The underlying ``systemctl is-enabled`` check is performed only once per
-    process (first read) and cached for the rest of the process lifetime.
-    The cache is invalidated when the value is set explicitly.
 
     When set to True, enables and starts ethoscope_light.service.
     When set to False, stops and disables the service.
 
     Args:
         new_value: None to query, True/False to set.
-        _force_refresh: If True, bypass the cache (used by tests).
 
     Returns:
         bool: Whether the light service is currently enabled.
     """
-    global _CACHED_HAS_LIGHT_HARDWARE
-
-    if new_value is not None:
-        try:
-            current_value = _CACHED_HAS_LIGHT_HARDWARE
-            if current_value is None or _force_refresh:
-                result = subprocess.run(
-                    ["systemctl", "is-enabled", "--quiet", "ethoscope_light.service"],
-                    capture_output=True,
-                    timeout=5,
-                )
-                current_value = result.returncode == 0
-        except Exception:
-            current_value = False
-
-        if new_value and not current_value:
-            subprocess.run(
-                ["systemctl", "enable", "--now", "ethoscope_light.service"],
-                capture_output=True,
-                timeout=10,
-            )
-            logging.info("Enabled ethoscope_light.service")
-
-        elif not new_value and current_value:
-            subprocess.run(
-                ["systemctl", "disable", "--now", "ethoscope_light.service"],
-                capture_output=True,
-                timeout=10,
-            )
-            logging.info("Disabled ethoscope_light.service")
-
-        _CACHED_HAS_LIGHT_HARDWARE = bool(new_value)
-        return _CACHED_HAS_LIGHT_HARDWARE
-
-    if _CACHED_HAS_LIGHT_HARDWARE is not None and not _force_refresh:
-        return _CACHED_HAS_LIGHT_HARDWARE
-
     try:
         result = subprocess.run(
             ["systemctl", "is-enabled", "--quiet", "ethoscope_light.service"],
             capture_output=True,
             timeout=5,
         )
-        _CACHED_HAS_LIGHT_HARDWARE = result.returncode == 0
+        current_value = result.returncode == 0
     except Exception:
-        _CACHED_HAS_LIGHT_HARDWARE = False
+        current_value = False
 
-    return _CACHED_HAS_LIGHT_HARDWARE
+    if new_value is None:
+        return current_value
 
+    if new_value and not current_value:
+        subprocess.run(
+            ["systemctl", "enable", "--now", "ethoscope_light.service"],
+            capture_output=True,
+            timeout=10,
+        )
+        logging.info("Enabled ethoscope_light.service")
 
-def _clear_light_hardware_cache():
-    """
-    Reset the cached light-hardware state (used by tests).
-    """
-    global _CACHED_HAS_LIGHT_HARDWARE
-    _CACHED_HAS_LIGHT_HARDWARE = None
+    elif not new_value and current_value:
+        subprocess.run(
+            ["systemctl", "disable", "--now", "ethoscope_light.service"],
+            capture_output=True,
+            timeout=10,
+        )
+        logging.info("Disabled ethoscope_light.service")
 
 
 def was_interrupted():

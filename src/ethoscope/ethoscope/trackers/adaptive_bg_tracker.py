@@ -6,6 +6,7 @@ from math import exp, log, log10, pi, sqrt
 
 import cv2
 import numpy as np
+from scipy import ndimage
 
 from ethoscope.core.data_point import DataPoint
 from ethoscope.core.variables import (
@@ -351,7 +352,6 @@ class AdaptiveBGModel(BaseTracker):
         self._buff_fg_backup = None
         self._buff_fg_diff = None
         self._old_sum_fg = 0
-        self._buff_img = None  # cached pre-allocation, passed to others
 
         self._roi = roi
 
@@ -415,19 +415,7 @@ class AdaptiveBGModel(BaseTracker):
         if mask is None:
             mask = np.ones(img.shape, dtype=np.uint8) * 255
 
-        # Check if pre-allocation exists
-        if (
-            self._buff_img is None
-            or self._buff_img.shape != img.shape
-            or self._buff_img.dtype != img.dtype
-        ):
-            # Create the pre-allocation
-            self._buff_img = np.empty(img.shape, dtype=img.dtype)
-
-        # Maintain local binding
-        buff_img = self._buff_img
-        # In-place: write img into the pre-allocated buffer.
-        np.copyto(buff_img, img)
+        buff_img = img.copy()
 
         cv2.GaussianBlur(buff_img, (self.blur_rad, self.blur_rad), 1.2, buff_img)
 
@@ -511,7 +499,7 @@ class AdaptiveBGModel(BaseTracker):
         cv2.threshold(self._buff_fg, 20, 255, cv2.THRESH_TOZERO, dst=self._buff_fg)
 
         # Backup the foreground buffer for subsequent analysis.
-        np.copyto(self._buff_fg_backup, self._buff_fg)
+        self._buff_fg_backup = np.copy(self._buff_fg)
 
         # Calculate the proportion of foreground pixels.
         prop_fg_pix = np.count_nonzero(self._buff_fg) / (grey.size)
@@ -736,17 +724,6 @@ class AdaptiveBGModel(BaseTracker):
         # todo center mass just on the ellipse area
         cv2.bitwise_and(self._buff_fg_backup, self._buff_fg, self._buff_fg_backup)
 
-        # Calculate all moments of the image array
-        M = cv2.moments(self._buff_fg_backup)
-
-        # m00 is the total area. We must check if it's zero to avoid a ZeroDivisionError
-        # which will crash your script if a frame has no flies (a completely black mask).
-        if M["m00"] != 0:
-            x = M["m10"] / M["m00"]
-            y = M["m01"] / M["m00"]
-        else:
-            # failed to get center of mass
-            logging.warning("Failed to get center of mass.")
-            raise NoPositionError
+        y, x = ndimage.center_of_mass(self._buff_fg_backup)
 
         return (x, y), (w, h), angle
