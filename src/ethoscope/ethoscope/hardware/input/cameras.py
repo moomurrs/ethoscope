@@ -664,7 +664,7 @@ class PiFrameGrabber2(PiFrameGrabber):
                 try:
                     capture = Picamera2(
                         tuning=Picamera2.load_tuning_file(
-                            "/usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json"
+                            "/usr/share/libcamera/ipa/rpi/vc4/imx708_noir.json"
                         )
                     )
                     logging.info("Successfully loaded NoIR tuning file")
