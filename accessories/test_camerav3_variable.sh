@@ -1,1 +1,0 @@
-rpicam-hello -t 0 --width 1280 --height 960 --shutter 45000 --gain 1 --hdr off --awbgains 1,1 --info-text "lp: %lp"
