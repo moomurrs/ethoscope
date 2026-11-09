@@ -332,7 +332,7 @@ EOF
 
     print_info "Configuring git repository..."
     cd /opt/ethoscope/
-    git checkout dev1
+    git checkout imx219
     git remote set-url origin git://node.local/ethoscope.git
 
     # Use --system instead of --global to avoid requiring $HOME
