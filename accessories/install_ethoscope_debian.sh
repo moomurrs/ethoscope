@@ -47,6 +47,12 @@ TIME_SYNC_SERVER="10.14.22.56"
 # Install and configure MariaDB (default false)
 INSTALL_MARIADB=false
 
+# Camera watchdog (libcamera): raise the sensor stall window from ~1s
+# (IPA-computed, 1s floor) to 10s so transient stalls don't kill the session.
+# Keep < ~25s: ethoscope's frame consumer aborts after 30s of no frames.
+# Refs: raspberrypi/libcamera#139, picamera2#952
+CAMERA_TIMEOUT_MS="${CAMERA_TIMEOUT_MS:-10000}"
+
 # Installation steps (order matters)
 STEP_NAMES=(
     "Install system packages (apt)"
@@ -709,6 +715,56 @@ step_configure_raspberry_pi_hardware() {
     echo 'dtparam=act_led_activelow=off' >> "$BOOTCFG"
 
     print_success "Hardware configured for $PI_MODEL"
+
+    # Raise libcamera's camera watchdog. Default is IPA-computed with a 1s
+    # floor; 10s absorbs transient sensor stalls instead of killing the session.
+    [[ "$CAMERA_TIMEOUT_MS" =~ ^[0-9]+$ ]] || {
+        print_error "CAMERA_TIMEOUT_MS must be numeric (got '$CAMERA_TIMEOUT_MS')"
+        return 1
+    }
+
+    # Per-pipeline default config: Pi 5 uses pisp (example.yaml), everything
+    # else vc4 (rpi_apps.yaml). Both pipelines' data ship in the package, so
+    # selection must be by SoC, not by whichever file exists first.
+    local conf="/etc/ethoscope/libcamera_rpi.yaml"
+    local src
+    if [[ "$PI_MODEL" == "pi5" ]]; then
+        src="/usr/share/libcamera/pipeline/rpi/pisp/example.yaml"
+    else
+        src="/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml"
+    fi
+
+    if [[ ! -f "$src" ]]; then
+        print_error "libcamera pipeline config not found at $src - cannot configure camera timeout"
+        return 1
+    fi
+
+    mkdir -p /etc/ethoscope
+    cp "$src" "$conf"
+
+    # Enable the (commented-out) key and set it; #? also handles an already-active key
+    if ! sed -E -i "s|^([[:space:]]*)#?[[:space:]]*\"camera_timeout_value_ms\"[[:space:]]*:.*|\1\"camera_timeout_value_ms\": ${CAMERA_TIMEOUT_MS},|" "$conf"; then
+        print_error "Failed to patch $conf - camera timeout left at default"
+        return 1
+    fi
+
+    if ! grep -qE "^[[:space:]]*\"camera_timeout_value_ms\":[[:space:]]*${CAMERA_TIMEOUT_MS}," "$conf"; then
+        print_error "camera_timeout_value_ms not set correctly in $conf - drop-ins not written"
+        return 1
+    fi
+
+    for svc in ethoscope_listener ethoscope_device; do
+        mkdir -p "/etc/systemd/system/${svc}.service.d"
+        printf '[Service]\nEnvironment=LIBCAMERA_RPI_CONFIG_FILE=%s\n' "$conf" \
+            > "/etc/systemd/system/${svc}.service.d/libcamera-camera-timeout.conf"
+    done
+    systemctl daemon-reload
+
+    print_success "Camera timeout set to ${CAMERA_TIMEOUT_MS}ms ($conf)"
+
+    if systemctl is-active --quiet ethoscope_listener.service; then
+        print_warning "Listener is running - restart to apply: sudo systemctl restart ethoscope_listener.service"
+    fi
 }
 
 #===============================================================================
